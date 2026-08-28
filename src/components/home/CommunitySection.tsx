@@ -1,48 +1,154 @@
-import Image from "next/image";
+import { useQuery } from "@tanstack/react-query";
+import { Check, Copy, Mail, Plus, X } from "lucide-react";
+import { useState } from "react";
 
 import { ScrollReveal } from "@/components/home/ScrollReveal";
 import { SponsorTable } from "@/components/home/SponsorTable";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Image } from "@/components/ui/image";
+import {
+  type ContributionWeek,
+  type ContributorCard,
+  formatCompact,
+} from "@/lib/community-contributors";
+import { fetchJson } from "@/lib/query-client";
 
-type GithubStatsContributor = {
-  total: number;
-  author: {
-    login: string;
-    avatar_url: string;
-    html_url: string;
-  };
-  weeks: Array<{
-    w: number;
-    a: number;
-    d: number;
-    c: number;
-  }>;
-};
-
-type ContributionWeek = {
-  label: string;
-  monthLabel: string;
-  commits: number;
-  additions: number;
-  deletions: number;
-};
-
-type ContributorCard = {
-  login: string;
-  avatarUrl: string;
-  profileUrl: string;
-  totalCommits: number;
-  recentCommits: number;
-  recentAdditions: number;
-  recentDeletions: number;
-  weeks: ContributionWeek[];
-};
-
-const STATS_URL =
-  "https://api.github.com/repos/suryaelidanto/umkmcepat/stats/contributors";
 const ALL_CONTRIBUTORS_URL =
   "https://github.com/suryaelidanto/umkmcepat/graphs/contributors";
 const REPOSITORY_URL = "https://github.com/suryaelidanto/umkmcepat";
-const RECENT_WEEK_COUNT = 12;
+
+const SPONSOR_EMAIL = "surya@umkmcepat.com";
+const SPONSOR_MAILTO = `mailto:${SPONSOR_EMAIL}?subject=${encodeURIComponent(
+  "Sponsorship UMKM Cepat - [Nama / Brand]",
+)}&body=${encodeURIComponent(
+  `Halo Surya & Tim UMKM Cepat,
+
+Saya tertarik menjadi sponsor UMKM Cepat:
+
+- Nama / Perusahaan: 
+- Website / Profil: 
+- Bentuk dukungan / sponsor: 
+- Nilai / Budget dukungan: 
+- Pesan / Catatan tambahan: 
+
+Terima kasih.`,
+)}`;
+
+function SponsorModal() {
+  const [copied, setCopied] = useState(false);
+
+  const copyEmail = async () => {
+    try {
+      await navigator.clipboard.writeText(SPONSOR_EMAIL);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          className="w-fit rounded-md border border-black/15 bg-transparent px-spacing-6 py-spacing-4 text-sm font-semibold text-[#1c1c1c] transition hover:bg-black/5 dark:border-white/14 dark:text-surface-warm-white dark:hover:bg-white/5"
+        >
+          Ikut sponsor
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Menjadi Sponsor UMKM Cepat</DialogTitle>
+          <DialogDescription>
+            Kirim penawaran sponsor ke{" "}
+            <span className="font-mono text-xs text-[#1c1c1c] dark:text-surface-warm-white">
+              {SPONSOR_EMAIL}
+            </span>
+            .
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-spacing-4 text-xs text-[#5f5f5d] dark:text-surface-warm-white/70">
+          <div className="rounded-lg border border-black/10 bg-black/[0.02] p-spacing-4 dark:border-white/10 dark:bg-white/[0.02]">
+            <p className="font-semibold text-[#1c1c1c] dark:text-surface-warm-white">
+              Contoh Format Email:
+            </p>
+            <pre className="mt-spacing-2 whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-[#5f5f5d] dark:text-surface-warm-white/80">
+              {`- Nama / Perusahaan:
+- Website / Profil:
+- Bentuk dukungan / sponsor:
+- Nilai / Budget dukungan:
+- Pesan / Catatan tambahan:`}
+            </pre>
+          </div>
+
+          <div className="flex flex-col gap-spacing-3 pt-spacing-2 sm:flex-row sm:items-center">
+            <Button asChild size="sm" className="flex-1">
+              <a href={SPONSOR_MAILTO}>
+                <Mail className="size-4" />
+                Kirim Email Sponsor
+              </a>
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={copyEmail}
+              className="gap-spacing-2"
+            >
+              {copied ? (
+                <>
+                  <Check className="size-4 text-status-success-light dark:text-status-success-dark" />
+                  Email Tersalin
+                </>
+              ) : (
+                <>
+                  <Copy className="size-4" />
+                  Salin Email
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+const CONTRIBUTOR_QUERY_OPTIONS = {
+  staleTime: 15 * 60_000,
+  gcTime: 15 * 60_000,
+  refetchOnWindowFocus: false,
+} as const;
+
+function useCommunityContributors() {
+  return useQuery({
+    queryKey: ["community", "contributors"],
+    queryFn: () => fetchJson<ContributorCard[]>("/api/community/contributors"),
+    enabled: typeof window !== "undefined",
+    ...CONTRIBUTOR_QUERY_OPTIONS,
+  });
+}
+
+export function reserveContributorHeight(
+  current: number | undefined,
+  measured: number,
+) {
+  if (!Number.isFinite(measured) || measured <= 0) {
+    return current;
+  }
+
+  return current === undefined ? measured : Math.max(current, measured);
+}
 
 const sponsors = [
   {
@@ -59,7 +165,7 @@ const faqs = [
   {
     question: "Apakah UMKM Cepat benar-benar gratis?",
     answer:
-      "Iya. Tujuan awalnya membantu usaha kecil mulai punya website tanpa biaya development.",
+      "Iya, semua fitur bisa kamu pakai tanpa biaya. Cukup daftar dan mulai buat websitemu.",
   },
   {
     question: "Website saya dibuat oleh AI saja?",
@@ -83,190 +189,92 @@ const faqs = [
   },
 ];
 
-function getGithubHeaders() {
-  return {
-    Accept: "application/vnd.github+json",
-    "User-Agent": "umkmcepat.com",
-    ...(process.env.GITHUB_TOKEN
-      ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` }
-      : {}),
-  };
-}
-
-function formatWeek(timestamp: number) {
-  return new Intl.DateTimeFormat("id-ID", {
-    day: "numeric",
-    month: "short",
-  }).format(new Date(timestamp * 1000));
-}
-
-function formatMonth(timestamp: number) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    year: "2-digit",
-  }).format(new Date(timestamp * 1000));
-}
-
-function formatCompact(value: number) {
-  if (value >= 1000) {
-    return `${(value / 1000).toLocaleString("id-ID", {
-      maximumFractionDigits: 1,
-    })}k`;
-  }
-
-  return value.toLocaleString("id-ID");
-}
-
-async function getTopContributors(): Promise<ContributorCard[]> {
-  try {
-    const response = await fetch(STATS_URL, {
-      headers: getGithubHeaders(),
-      next: { revalidate: 60 * 60 * 6 },
-    });
-
-    if (!response.ok) {
-      return [];
-    }
-
-    const stats = (await response.json()) as GithubStatsContributor[];
-
-    return stats
-      .map((contributor) => {
-        const weeks = contributor.weeks
-          .slice(-RECENT_WEEK_COUNT)
-          .map((week) => ({
-            label: formatWeek(week.w),
-            monthLabel: formatMonth(week.w),
-            commits: week.c,
-            additions: week.a,
-            deletions: week.d,
-          }));
-        const recentCommits = weeks.reduce(
-          (total, week) => total + week.commits,
-          0,
-        );
-        const recentAdditions = weeks.reduce(
-          (total, week) => total + week.additions,
-          0,
-        );
-        const recentDeletions = weeks.reduce(
-          (total, week) => total + week.deletions,
-          0,
-        );
-
-        return {
-          login: contributor.author.login,
-          avatarUrl: `${contributor.author.avatar_url}&s=104`,
-          profileUrl: contributor.author.html_url,
-          totalCommits: contributor.total,
-          recentCommits,
-          recentAdditions,
-          recentDeletions,
-          weeks,
-        };
-      })
-      .sort(
-        (left, right) =>
-          right.recentCommits - left.recentCommits ||
-          right.totalCommits - left.totalCommits,
-      )
-      .slice(0, 3);
-  } catch {
-    return [];
-  }
-}
-
-function ContributionChart({
+function MiniChart({
   weeks,
   maxCommits,
 }: {
   weeks: ContributionWeek[];
   maxCommits: number;
 }) {
-  const yLabels = [40, 20, 0];
-
   return (
-    <div className="mt-spacing-5 rounded-[14px] border border-surface-warm-white/12 bg-[#0f1218] px-spacing-4 pb-spacing-5 pt-spacing-4">
-      <div className="grid grid-cols-[1fr_34px] gap-spacing-3">
-        <div className="relative h-28">
-          <div className="absolute inset-x-0 top-0 border-t border-dashed border-surface-warm-white/12" />
-          <div className="absolute inset-x-0 top-1/3 border-t border-dashed border-surface-warm-white/12" />
-          <div className="absolute inset-x-0 top-2/3 border-t border-dashed border-surface-warm-white/12" />
-          <div className="absolute inset-x-0 bottom-0 border-t border-surface-warm-white/24" />
-          <div className="absolute inset-y-0 left-1/4 border-l border-dashed border-surface-warm-white/10" />
-          <div className="absolute inset-y-0 left-1/2 border-l border-dashed border-surface-warm-white/10" />
-          <div className="absolute inset-y-0 left-3/4 border-l border-dashed border-surface-warm-white/10" />
-
-          <div className="relative flex h-full items-end gap-spacing-2">
-            {weeks.map((week) => {
-              const height = maxCommits
-                ? Math.max(
-                    (week.commits / maxCommits) * 100,
-                    week.commits ? 8 : 3,
-                  )
-                : 3;
-
-              return (
-                <div
-                  key={`${week.label}-${week.commits}`}
-                  className="group/bar relative flex h-full min-w-0 flex-1 items-end"
-                >
-                  <div
-                    className="w-full rounded-t-[3px] bg-[#0d6efd] transition group-hover/bar:bg-[#58a6ff]"
-                    style={{ height: `${height}%` }}
-                  />
-                  <div className="pointer-events-none absolute bottom-[calc(100%+10px)] left-1/2 z-10 w-36 -translate-x-1/2 rounded-radius-md bg-surface-warm-white px-spacing-4 py-spacing-3 text-xs text-foreground-primary opacity-0 shadow-[0_12px_34px_rgba(0,0,0,0.28)] transition group-hover/bar:opacity-100">
-                    <p className="font-semibold">{week.label}</p>
-                    <p className="mt-spacing-1">{week.commits} commit</p>
-                    <p className="mt-spacing-1 text-[#0d6efd]">
-                      {formatCompact(week.additions)} ++
-                    </p>
-                    <p className="text-[#ff4d4f]">
-                      {formatCompact(week.deletions)} --
-                    </p>
-                  </div>
-                </div>
-              );
-            })}
+    <div className="mt-spacing-3 flex h-14 items-end gap-spacing-1.5">
+      {weeks.map((week) => {
+        const height = maxCommits
+          ? Math.max((week.commits / maxCommits) * 100, week.commits ? 8 : 3)
+          : 3;
+        return (
+          <div
+            key={`${week.label}-${week.commits}`}
+            className="group/bar relative flex h-full min-w-0 flex-1 items-end"
+          >
+            <div
+              className="w-full rounded-t-[2px] bg-github-blue-deep transition-transform duration-150 group-hover/bar:scale-x-125 group-hover/bar:bg-github-blue"
+              style={{ height: `${height}%` }}
+            />
+            <div className="pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 z-10 w-32 -translate-x-1/2 scale-95 rounded-md border border-black/10 bg-white px-spacing-3 py-spacing-2 text-xs text-[#1c1c1c] opacity-0 shadow-lg transition duration-150 group-hover/bar:scale-100 group-hover/bar:opacity-100 dark:border-white/10 dark:bg-[#1c1c1a] dark:text-surface-warm-white dark:shadow-[0_12px_32px_rgba(0,0,0,0.45)]">
+              <p className="font-semibold">{week.label}</p>
+              <p className="mt-spacing-1 text-[#5f5f5d] dark:text-surface-warm-white/68">
+                {week.commits} commit
+              </p>
+              <p className="mt-spacing-1">
+                <span className="text-github-blue">+{week.additions}</span>
+                <span className="ml-spacing-2 text-github-red">
+                  -{week.deletions}
+                </span>
+              </p>
+            </div>
           </div>
-        </div>
-
-        <div className="flex h-28 flex-col items-start justify-between text-xs text-surface-warm-white/62">
-          {yLabels.map((label) => (
-            <span key={label}>{label}</span>
-          ))}
-        </div>
-      </div>
-
-      <div className="mt-spacing-4 grid grid-cols-3 pl-spacing-4 pr-12 text-xs text-surface-warm-white/50">
-        <span>{weeks[0]?.monthLabel}</span>
-        <span className="text-center">{weeks[4]?.monthLabel}</span>
-        <span className="text-right">{weeks[8]?.monthLabel}</span>
-      </div>
+        );
+      })}
     </div>
   );
 }
 
-export async function CommunitySection() {
-  const contributors = await getTopContributors();
+function ContributorSkeleton() {
+  return (
+    <>
+      {[0, 1, 2].map((index) => (
+        <div
+          key={index}
+          className="flex flex-col gap-spacing-5 py-spacing-6 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div className="flex min-w-0 items-center gap-spacing-4">
+            <span className="w-5 shrink-0" />
+            <div className="size-10 shrink-0 animate-pulse rounded-full bg-black/10 dark:bg-white/10" />
+            <div className="min-h-[42px] min-w-0 space-y-spacing-2">
+              <div className="h-4 w-28 animate-pulse rounded bg-black/10 dark:bg-white/10" />
+              <div className="h-3 w-40 animate-pulse rounded bg-black/10 dark:bg-white/10" />
+            </div>
+          </div>
+          <div className="mt-spacing-5 h-16 w-full animate-pulse rounded bg-white/10 sm:w-48" />
+        </div>
+      ))}
+    </>
+  );
+}
+
+export function CommunitySection() {
+  const contributorsQuery = useCommunityContributors();
+  const contributors = contributorsQuery.data ?? [];
   const maxCommits = Math.max(
     1,
     ...contributors.flatMap((contributor) =>
-      contributor.weeks.map((week) => week.commits),
+      (contributor.weeks ?? []).map((week) => week.commits),
     ),
   );
+  const isLoaded = contributors.length > 0;
 
   return (
-    <section className="bg-[#151515] px-4 py-spacing-14 sm:px-spacing-9 lg:px-spacing-10">
+    <section className="bg-[#eceae4] px-4 py-spacing-14 text-[#1c1c1c] transition-colors duration-200 dark:bg-[#151515] dark:text-surface-warm-white sm:px-spacing-9 lg:px-spacing-10">
       <div className="mx-auto max-w-6xl space-y-spacing-14">
         <ScrollReveal>
           <div>
             <div className="flex flex-col gap-spacing-5 text-left sm:flex-row sm:items-end sm:justify-between">
               <div>
-                <h2 className="text-3xl font-semibold tracking-[-0.05em] text-surface-warm-white sm:text-4xl">
+                <h2 className="text-3xl font-semibold tracking-[-0.05em] text-[#1c1c1c] dark:text-surface-warm-white sm:text-4xl">
                   Top kontributor proyek
                 </h2>
-                <p className="mt-spacing-3 text-sm text-surface-warm-white/58">
+                <p className="mt-spacing-3 text-sm text-[#5f5f5d] dark:text-surface-warm-white/58">
                   Dikerjakan terbuka di Github, jadi perkembangannya bisa ikut
                   dilihat.
                 </p>
@@ -276,7 +284,7 @@ export async function CommunitySection() {
                   href={ALL_CONTRIBUTORS_URL}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex w-fit items-center justify-center rounded-radius-lg border border-surface-warm-white/14 bg-surface-warm-white/8 px-spacing-6 py-spacing-4 text-sm font-semibold text-surface-warm-white transition hover:bg-surface-warm-white/12 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-surface-warm-white/70"
+                  className="inline-flex w-fit items-center justify-center rounded-md border border-black/15 bg-black/[0.04] px-spacing-6 py-spacing-4 text-sm font-semibold text-[#1c1c1c] transition hover:bg-black/[0.08] dark:border-white/14 dark:bg-transparent dark:text-surface-warm-white dark:hover:bg-white/[0.06]"
                 >
                   Lihat semua kontributor
                 </a>
@@ -284,133 +292,115 @@ export async function CommunitySection() {
                   href={REPOSITORY_URL}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex w-fit items-center justify-center rounded-radius-lg border border-surface-warm-white/14 bg-surface-warm-white px-spacing-6 py-spacing-4 text-sm font-semibold text-foreground-primary transition hover:bg-surface-warm-white/86 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-surface-warm-white/70"
+                  className="inline-flex w-fit items-center justify-center rounded-md bg-[#1c1c1c] px-spacing-6 py-spacing-4 text-sm font-semibold text-white transition hover:bg-[#1c1c1c]/90 dark:bg-white dark:text-[#141413] dark:hover:bg-white/90"
                 >
                   Buka Github
                 </a>
               </div>
             </div>
 
-            {contributors.length ? (
-              <div className="mt-spacing-8 grid gap-spacing-5 md:grid-cols-3">
-                {contributors.map((contributor, index) => (
-                  <article
-                    key={contributor.login}
-                    className="group rounded-[30px] border border-surface-warm-white/12 bg-[#242422] p-spacing-6 text-left shadow-[0_24px_80px_rgba(0,0,0,0.14)] transition hover:bg-[#282826]"
-                  >
-                    <div className="flex items-start justify-between gap-spacing-5">
+            <div>
+              <div className="mt-spacing-8 divide-y divide-black/10 border-t border-black/10 dark:divide-white/[0.07] dark:border-white/[0.07]">
+                {!isLoaded ? (
+                  <ContributorSkeleton />
+                ) : (
+                  contributors.map((contributor, index) => (
+                    <div
+                      key={contributor.login}
+                      className="flex flex-col gap-spacing-5 py-spacing-6 sm:flex-row sm:items-center sm:justify-between"
+                    >
                       <div className="flex min-w-0 items-center gap-spacing-4">
-                        <Image
-                          src={contributor.avatarUrl}
-                          alt={`Foto profil ${contributor.login}`}
-                          width={52}
-                          height={52}
-                          className="size-[52px] rounded-full border border-surface-warm-white/12 bg-surface-warm-white/10"
-                          unoptimized
-                        />
+                        <span className="w-5 shrink-0 font-mono text-sm text-[#5f5f5d] dark:text-surface-warm-white/44">
+                          #{index + 1}
+                        </span>
+                        <a
+                          href={contributor.profileUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="shrink-0"
+                        >
+                          <Image
+                            src={contributor.avatarUrl}
+                            alt={contributor.login}
+                            width={40}
+                            height={40}
+                            className="size-10 rounded-full border border-black/10 bg-black/5 dark:border-white/10 dark:bg-white/10"
+                          />
+                        </a>
                         <div className="min-w-0">
                           <a
                             href={contributor.profileUrl}
                             target="_blank"
                             rel="noreferrer"
-                            className="truncate text-lg font-semibold text-[#58a6ff] transition hover:underline"
+                            className="truncate text-base font-semibold text-[#1c1c1c] hover:underline dark:text-surface-warm-white"
                           >
                             {contributor.login}
                           </a>
-                          <p className="mt-spacing-1 text-xs text-surface-warm-white/58">
-                            <span>{contributor.recentCommits} commits</span>
-                            <span className="ml-spacing-3 text-[#58a6ff]">
-                              {formatCompact(contributor.recentAdditions)} ++
-                            </span>
-                            <span className="ml-spacing-3 text-[#ff4d4f]">
-                              {formatCompact(contributor.recentDeletions)} --
-                            </span>
+                          <p className="text-xs text-[#5f5f5d] dark:text-surface-warm-white/58">
+                            {formatCompact(contributor.totalCommits)} commit
                           </p>
                         </div>
                       </div>
-                      <span className="rounded-full border border-surface-warm-white/10 bg-[#151515] px-spacing-3 py-spacing-2 text-xs font-semibold text-surface-warm-white/72">
-                        #{index + 1}
-                      </span>
-                    </div>
 
-                    <ContributionChart
-                      weeks={contributor.weeks}
-                      maxCommits={maxCommits}
-                    />
-                  </article>
-                ))}
-                {contributors.length < 3 ? (
-                  <a
-                    href={REPOSITORY_URL}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex min-h-64 flex-col justify-between rounded-[30px] border border-dashed border-surface-warm-white/14 bg-surface-warm-white/[0.035] p-spacing-6 text-left transition hover:bg-surface-warm-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-surface-warm-white/70"
-                  >
-                    <div>
-                      <p className="text-lg font-semibold text-surface-warm-white">
-                        Ikut bantu proyek ini
-                      </p>
-                      <p className="mt-spacing-3 text-sm leading-6 text-surface-warm-white/56">
-                        Lihat repo, buka issue, atau kirim pull request kalau
-                        ada yang ingin kamu rapikan.
-                      </p>
+                      {contributor.weeks ? (
+                        <div className="mt-spacing-5 h-16 w-full sm:mt-0 sm:w-48">
+                          <MiniChart
+                            weeks={contributor.weeks}
+                            maxCommits={maxCommits}
+                          />
+                        </div>
+                      ) : null}
                     </div>
-                    <span className="text-sm font-semibold text-surface-warm-white underline decoration-surface-warm-white/24 underline-offset-4">
-                      Buka Github
-                    </span>
-                  </a>
-                ) : null}
+                  ))
+                )}
               </div>
-            ) : (
-              <div className="mt-spacing-8 rounded-[28px] border border-dashed border-surface-warm-white/14 bg-[#1f1f1d] p-spacing-7 text-sm leading-6 text-surface-warm-white/58">
-                Data kontributor belum bisa dibaca. Tambahkan GITHUB_TOKEN di
-                env server untuk menaikkan batas akses Github API.
-              </div>
-            )}
+            </div>
           </div>
         </ScrollReveal>
 
         <ScrollReveal>
           <div className="text-left">
-            <div className="flex flex-col gap-spacing-5 sm:flex-row sm:items-end sm:justify-between">
+            <div className="flex flex-col gap-spacing-5 text-left sm:flex-row sm:items-end sm:justify-between">
               <div>
-                <h2 className="text-3xl font-semibold tracking-[-0.05em] text-surface-warm-white sm:text-4xl">
+                <h2 className="text-3xl font-semibold tracking-[-0.05em] text-[#1c1c1c] dark:text-surface-warm-white sm:text-4xl">
                   Sponsor
                 </h2>
-                <p className="mt-spacing-3 text-sm text-surface-warm-white/58">
+                <p className="mt-spacing-3 text-sm text-[#5f5f5d] dark:text-surface-warm-white/58">
                   Terima kasih sudah bantu UMKM Cepat tetap 100% gratis.
                 </p>
               </div>
-              <button
-                type="button"
-                disabled
-                className="w-fit rounded-radius-lg border border-surface-warm-white/14 bg-surface-warm-white/8 px-spacing-6 py-spacing-4 text-sm font-semibold text-surface-warm-white/44"
-              >
-                Ikut sponsor
-              </button>
+              <SponsorModal />
             </div>
 
-            <SponsorTable sponsors={sponsors} />
+            <SponsorTable sponsors={sponsors} flat />
           </div>
         </ScrollReveal>
 
         <ScrollReveal>
           <div className="text-left">
-            <h2 className="text-3xl font-semibold tracking-[-0.05em] text-surface-warm-white sm:text-4xl">
+            <h2 className="text-3xl font-semibold tracking-[-0.05em] text-[#1c1c1c] dark:text-surface-warm-white sm:text-4xl">
               Pertanyaan yang sering muncul
             </h2>
-            <div className="mt-spacing-8 divide-y divide-surface-warm-white/10 overflow-hidden rounded-[24px] border border-surface-warm-white/10 bg-[#1f1f1d]">
+            <div className="mt-spacing-8 divide-y divide-black/10 border-t border-black/10 dark:divide-white/[0.07] dark:border-white/[0.07]">
               {faqs.map((faq) => (
-                <details key={faq.question} className="group">
-                  <summary className="flex cursor-pointer list-none items-center justify-between gap-spacing-6 px-spacing-6 py-spacing-5 text-base font-semibold text-surface-warm-white outline-none transition hover:bg-surface-warm-white/[0.04] focus-visible:bg-surface-warm-white/[0.04] [&::-webkit-details-marker]:hidden">
+                <details
+                  key={faq.question}
+                  className="group transition-all duration-200"
+                >
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-spacing-6 py-spacing-5 text-base font-semibold text-[#1c1c1c] outline-none transition dark:text-surface-warm-white [&::-webkit-details-marker]:hidden">
                     {faq.question}
-                    <span className="grid size-7 shrink-0 place-items-center rounded-full border border-surface-warm-white/12 text-surface-warm-white/62 transition group-open:rotate-45">
-                      +
+                    <span className="relative grid size-6 shrink-0 place-items-center text-black/50 dark:text-surface-warm-white/50">
+                      <Plus className="absolute size-4 transition-all duration-300 ease-out group-open:rotate-90 group-open:opacity-0" />
+                      <X className="absolute size-4 -rotate-90 opacity-0 transition-all duration-300 ease-out group-open:rotate-0 group-open:opacity-100" />
                     </span>
                   </summary>
-                  <p className="px-spacing-6 pb-spacing-6 text-sm leading-6 text-surface-warm-white/58">
-                    {faq.answer}
-                  </p>
+                  <div className="grid grid-rows-[0fr] transition-[grid-template-rows] duration-300 ease-out group-open:grid-rows-[1fr]">
+                    <div className="overflow-hidden">
+                      <p className="pb-spacing-6 text-sm leading-6 text-[#5f5f5d] transition-opacity duration-300 dark:text-surface-warm-white/68">
+                        {faq.answer}
+                      </p>
+                    </div>
+                  </div>
                 </details>
               ))}
             </div>

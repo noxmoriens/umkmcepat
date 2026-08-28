@@ -38,15 +38,18 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
+.eslintcache
 next-env.d.ts
 
 # Sentry Config File
 .env.sentry-build-plugin
 .qodo
+**/.obsidian/
 
 # Local automation/browser artifacts
 .browser/
 .pi/
+.pi-subagents/
 graphify-out/
 
 # Local object storage uploads
@@ -55,13 +58,44 @@ graphify-out/
 
 # Dev/runtime logs
 *.log
+/dev.log
+/dev.log.1
 *.err.log
+docs/notes/ideas.md
+docs/notes/notes.md
+docs/notes/ideas-old/*
+!docs/notes/ideas-old/.gitkeep
+docs/notes/attachments/*
+!docs/notes/attachments/.gitkeep
 # Local dev process files
 *.pid
 
-# Storybook build output
-/storybook-static/
+cookie.txt
+cookie.header.txt
+cookie_local.txt
+cookie.txt.claude/
 
-# Lighthouse local reports/session state
-/.lighthouseci/
-/.lighthouse-auth/
+.output/
+.nitro/
+.tanstack/
+src/routeTree.gen.ts
+sb-err.txt
+sb-full.txt
+_session_token.txt
+_token.txt
+_build*.txt
+_sse*.txt
+
+# Local validation caches (regenerated on every run)
+/.cache/
+.prettiercache
+.eslintcache
+auth.env
+*.env
+
+.omc
+__captures__/
+.firecrawl/
+
+.playwright-mcp/
+tmp/

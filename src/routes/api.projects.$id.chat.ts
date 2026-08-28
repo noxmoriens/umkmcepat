@@ -1,0 +1,59 @@
+import { createFileRoute } from "@tanstack/react-router";
+
+import { auth } from "@/lib/auth/auth";
+import { prisma } from "@/lib/prisma";
+import {
+  CHAT_PAGE_SIZE,
+  getProjectChatPage,
+  parseProjectChatMessages,
+} from "@/lib/projects/chat-memory";
+import { isAdminEmail } from "@/lib/waitlist/waitlist";
+
+export const Route = createFileRoute("/api/projects/$id/chat")({
+  server: {
+    handlers: {
+      GET: async ({ request, params }) => {
+        const session = await auth();
+
+        if (!session?.user?.id) {
+          return Response.json(
+            { message: "Masuk dulu untuk melanjutkan." },
+            { status: 401 },
+          );
+        }
+
+        const { id } = params;
+        const url = new URL(request.url);
+        const beforeParam = url.searchParams.get("before");
+        const limitParam = url.searchParams.get("limit");
+        const before = beforeParam ? Number(beforeParam) : null;
+        const limit = limitParam ? Number(limitParam) : CHAT_PAGE_SIZE;
+
+        const admin = isAdminEmail(session.user.email ?? "");
+        const project = await prisma.project.findFirst({
+          where: { id, ...(admin ? {} : { userId: session.user.id }) },
+          select: { id: true },
+        });
+
+        if (!project) {
+          return Response.json(
+            { message: "Proyek tidak ditemukan." },
+            { status: 404 },
+          );
+        }
+
+        const [row] = await prisma.$queryRaw<[{ chatMessages: unknown }]>`
+          SELECT "chatMessages" FROM "Project" WHERE id = ${project.id}
+        `;
+
+        const page = getProjectChatPage(
+          parseProjectChatMessages(row.chatMessages),
+          Number.isFinite(before) ? before : null,
+          Number.isFinite(limit) ? limit : CHAT_PAGE_SIZE,
+        );
+
+        return Response.json(page);
+      },
+    },
+  },
+});

@@ -1,32 +1,116 @@
 import { spawn } from "node:child_process";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { statSync } from "node:fs";
+import {
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 
-import { type ProjectSiteSchema } from "./site-schema";
+import {
+  type BuildGeneratedProjectResult,
+  type GeneratedDistFile,
+  type GeneratedProjectFile,
+} from "./generated-types";
 
-export type GeneratedProjectFile = {
-  path: string;
-  content: string;
+import { getSettingSync } from "@/lib/config/app-settings";
+import { isGeneratedBuildExecutionEnabled } from "@/lib/config/config";
+import { devLog } from "@/lib/dev-log";
+import { prisma } from "@/lib/prisma";
+import { sanitizeBuildLog } from "@/lib/projects/build-logs";
+import { validateGeneratedAppManifest } from "@/lib/projects/generated-app-manifest";
+import { validateGeneratedBuildPolicy } from "@/lib/projects/generated-build-policy";
+import {
+  assertGeneratedResourceBudget,
+  getGeneratedResourceBudget,
+} from "@/lib/projects/generated-resource-budget";
+import { readProjectAsset } from "@/lib/projects/project-assets";
+import {
+  ensureSharedNodeModules,
+  linkSharedNodeModules,
+} from "@/lib/projects/shared-node-modules";
+
+type BuildCommandResult = Omit<BuildGeneratedProjectResult, "distFiles">;
+
+type BuildGeneratedProjectOptions = {
+  commandRunner?: (
+    command: string[],
+    cwd: string,
+  ) => Promise<BuildCommandResult>;
+  timeoutMs?: number;
+  workspaceRoot?: string;
+  workspaceKey?: string;
 };
 
-export type GeneratedDistFile = {
-  content: string;
-  contentType: string;
-  path: string;
-};
-
-export type BuildGeneratedProjectResult = {
-  distFiles: GeneratedDistFile[];
-  ok: boolean;
-  log: string;
+type BuildCacheMetadata = {
+  dependencySignature: string;
+  runtimeProfile: string;
+  schemaVersion: 1;
 };
 
 const MAX_LOG_LENGTH = 20_000;
-const BUILD_TIMEOUT_MS = 180_000;
+const MAX_IN_FLIGHT_LOG_LENGTH = 1024 * 1024;
+export const DEFAULT_GENERATED_BUILD_TIMEOUT_MS = 90_000;
+const MIN_GENERATED_BUILD_TIMEOUT_MS = 30_000;
+const MAX_GENERATED_BUILD_TIMEOUT_MS = 180_000;
+const GENERATED_BUILD_TIMEOUT_SETTING = "runtime.generated_build_timeout_ms";
+const GENERATED_BUILD_TIMEOUT_ENV = "PROJECT_GENERATED_BUILD_TIMEOUT_MS";
+const BLOCKED_GENERATED_PATHS = new Set([
+  ".env",
+  ".env.local",
+  ".env.production",
+  "bun.lock",
+  "bun.lockb",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+]);
+const BLOCKED_WINDOWS_BASENAMES = new Set([
+  "aux",
+  "com1",
+  "com2",
+  "com3",
+  "com4",
+  "com5",
+  "com6",
+  "com7",
+  "com8",
+  "com9",
+  "con",
+  "lpt1",
+  "lpt2",
+  "lpt3",
+  "lpt4",
+  "lpt5",
+  "lpt6",
+  "lpt7",
+  "lpt8",
+  "lpt9",
+  "nul",
+  "prn",
+]);
 
-function json(value: unknown) {
-  return JSON.stringify(value, null, 2);
+export function getGeneratedBuildTimeoutMs() {
+  const readSync = getSettingSync as unknown as (
+    key: string,
+    fallback: undefined,
+  ) => number | undefined;
+  const dbValue = readSync(GENERATED_BUILD_TIMEOUT_SETTING, undefined);
+  const envValue = process.env[GENERATED_BUILD_TIMEOUT_ENV];
+  const parsedEnv = envValue ? Number(envValue) : undefined;
+  const configured = dbValue ?? parsedEnv ?? DEFAULT_GENERATED_BUILD_TIMEOUT_MS;
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return DEFAULT_GENERATED_BUILD_TIMEOUT_MS;
+  }
+  return Math.min(
+    MAX_GENERATED_BUILD_TIMEOUT_MS,
+    Math.max(MIN_GENERATED_BUILD_TIMEOUT_MS, Math.round(configured)),
+  );
 }
 
 export function parseGeneratedDistFiles(value: unknown): GeneratedDistFile[] {
@@ -72,60 +156,324 @@ export function assertSafeProjectFilePath(filePath: string) {
     path.isAbsolute(filePath) ||
     filePath.includes("\\") ||
     filePath.split("/").some((part) => part === "..") ||
-    filePath === ".env" ||
+    BLOCKED_GENERATED_PATHS.has(filePath) ||
     filePath.startsWith(".env.") ||
+    (filePath.startsWith(".") && !isAllowedGeneratedDotPath(filePath)) ||
+    (filePath.includes("/.") && !isAllowedGeneratedDotPath(filePath)) ||
     filePath.includes("/node_modules/") ||
-    filePath.startsWith("node_modules/")
+    filePath.startsWith("node_modules/") ||
+    filePath.startsWith(".data/") ||
+    filePath.startsWith(".next/") ||
+    filePath.startsWith(".pi/") ||
+    filePath.startsWith(".browser/") ||
+    filePath.split("/").some(isBlockedWindowsPathPart)
   ) {
     throw new Error(`Unsafe generated file path: ${filePath}`);
   }
 }
 
-export async function buildGeneratedProject(
-  files: GeneratedProjectFile[],
-): Promise<BuildGeneratedProjectResult> {
-  const root = await mkdir(path.join(tmpdir(), "umkmcepat-build-"), {
-    recursive: true,
-  }).then(() => path.join(tmpdir(), `umkmcepat-build-${crypto.randomUUID()}`));
-  await mkdir(root, { recursive: true });
-
-  try {
-    for (const file of files) {
-      assertSafeProjectFilePath(file.path);
-      const target = path.resolve(root, file.path);
-
-      if (!target.startsWith(`${root}${path.sep}`)) {
-        throw new Error(`Unsafe generated file path: ${file.path}`);
-      }
-
-      await mkdir(path.dirname(target), { recursive: true });
-      await writeFile(target, file.content, "utf8");
-    }
-
-    const install = await runCommand(["bun", "install"], root);
-
-    if (!install.ok) {
-      return { ...install, distFiles: [] };
-    }
-
-    const build = await runCommand(["bun", "run", "build"], root);
-    const distFiles = build.ok
-      ? await collectDistFiles(path.join(root, "dist"))
-      : [];
-    return {
-      distFiles,
-      ok: build.ok,
-      log: [install.log, build.log].filter(Boolean).join("\n"),
-    };
-  } finally {
-    await rm(root, { force: true, recursive: true });
-  }
+function isAllowedGeneratedDotPath(_filePath: string) {
+  return false;
 }
 
-async function runCommand(
+function isBlockedWindowsPathPart(part: string) {
+  const basename = part.split(".")[0]?.toLowerCase() ?? "";
+  return BLOCKED_WINDOWS_BASENAMES.has(basename);
+}
+
+export async function buildGeneratedProject(
+  files: GeneratedProjectFile[],
+  options: BuildGeneratedProjectOptions = {},
+): Promise<BuildGeneratedProjectResult> {
+  if (!isGeneratedBuildExecutionEnabled()) {
+    return {
+      distFiles: [],
+      log: "Generated build execution is disabled by platform policy.",
+      ok: false,
+    };
+  }
+
+  try {
+    assertGeneratedResourceBudget(files, "source");
+  } catch (error) {
+    return {
+      distFiles: [],
+      log:
+        error instanceof Error
+          ? error.message
+          : "Generated source exceeds platform limits.",
+      ok: false,
+    };
+  }
+
+  const manifestResult = validateGeneratedAppManifest(files);
+
+  if (!manifestResult.ok) {
+    return {
+      distFiles: [],
+      ok: false,
+      log: `Generated app manifest failed preflight:\n${manifestResult.issues
+        .map((issue) => `- ${issue}`)
+        .join("\n")}`,
+    };
+  }
+
+  const buildPolicyResult = validateGeneratedBuildPolicy(
+    files,
+    manifestResult.manifest.runtimeProfile,
+  );
+
+  if (!buildPolicyResult.ok) {
+    return {
+      distFiles: [],
+      ok: false,
+      log: `Generated app build policy failed preflight:\n${buildPolicyResult.issues
+        .map((issue) => `- ${issue}`)
+        .join("\n")}`,
+    };
+  }
+
+  return buildGeneratedProjectInWorkspace(files, manifestResult.manifest, {
+    ...options,
+    workspaceKey: options.workspaceKey ?? manifestResult.manifest.projectId,
+  });
+}
+
+// node:child_process.spawn on Windows requires an absolute path or an
+export function resolveBundledRunner(): string {
+  const explicit = process.env.PROJECT_BUILD_BUN_PATH?.trim();
+  if (explicit) {
+    return explicit;
+  }
+
+  const candidateNames =
+    process.platform === "win32" ? ["bun.exe", "bun"] : ["bun"];
+
+  function firstExisting(dirs: string[]): string | null {
+    for (const dir of dirs) {
+      if (!dir) {
+        continue;
+      }
+      for (const name of candidateNames) {
+        const full = path.join(dir, name);
+        try {
+          statSync(full);
+          return full;
+        } catch {
+          // keep searching
+        }
+      }
+    }
+    return null;
+  }
+
+  // If this process is itself running under bun (the normal `bun run dev`
+  if (path.basename(process.execPath).toLowerCase().startsWith("bun")) {
+    return process.execPath;
+  }
+
+  // This code can also run inside a plain node subprocess spawned by the
+  const fromHome = firstExisting([path.join(homedir(), ".bun", "bin")]);
+  if (fromHome) {
+    return fromHome;
+  }
+
+  const pathDirs = (process.env.PATH ?? "").split(path.delimiter);
+  const fromPath = firstExisting(pathDirs);
+  if (fromPath) {
+    return fromPath;
+  }
+
+  // Last resort: rely on PATH lookup with the OS-correct suffix.
+  return candidateNames[0];
+}
+
+const BUNDLED_RUNNER = resolveBundledRunner();
+
+async function buildGeneratedProjectInWorkspace(
+  files: GeneratedProjectFile[],
+  manifest: {
+    packageManager: "bun";
+    projectId: string;
+    runtimeProfile: string;
+    templateId: string;
+    templateVersion: string;
+  },
+  options: BuildGeneratedProjectOptions,
+): Promise<BuildGeneratedProjectResult> {
+  const startedAt = Date.now();
+  const timeoutMs = options.timeoutMs ?? getGeneratedBuildTimeoutMs();
+  const commandRunner =
+    options.commandRunner ??
+    ((command, cwd) => runCommand(command, cwd, timeoutMs));
+  const workspaceRoot = resolveBuildWorkspaceRoot(options.workspaceRoot);
+  const workspace = path.join(
+    workspaceRoot,
+    toSafeWorkspacePart(options.workspaceKey ?? manifest.projectId),
+    toSafeWorkspacePart(manifest.runtimeProfile),
+  );
+  const metadataPath = path.join(
+    workspace,
+    ".cache",
+    "generated-app",
+    "build-cache.json",
+  );
+  const dependencySignature = createDependencySignature(files, manifest);
+  let cacheMetadata = await readBuildCacheMetadata(metadataPath);
+  let installSkipped = false;
+  let resetWorkspace =
+    cacheMetadata?.dependencySignature !== dependencySignature ||
+    cacheMetadata.runtimeProfile !== manifest.runtimeProfile ||
+    !(await pathExists(path.join(workspace, "node_modules")));
+
+  async function attemptBuild(resetBeforeBuild: boolean) {
+    if (resetBeforeBuild) {
+      await rm(workspace, { force: true, recursive: true });
+      cacheMetadata = null;
+    }
+
+    await mkdir(workspace, { recursive: true });
+    await syncGeneratedProjectFiles(workspace, files);
+    const resolvedProjectId = (
+      options.workspaceKey ||
+      manifest.projectId ||
+      ""
+    ).replace(/-agentic-check$/i, "");
+    await materializeProjectAssetsToWorkspace(workspace, resolvedProjectId);
+
+    // Link the shared golden node_modules (read-only) before the install check.
+    let goldenLinked = false;
+    try {
+      const packageJsonContent = files.find(
+        (file) => file.path === "package.json",
+      )?.content;
+      const sharedNm = await ensureSharedNodeModules(
+        workspaceRoot,
+        dependencySignature,
+        {
+          installRunner: (cwd) =>
+            commandRunner([BUNDLED_RUNNER, "install", "--ignore-scripts"], cwd),
+          packageJsonContent,
+        },
+      );
+      goldenLinked = await linkSharedNodeModules(workspace, sharedNm);
+      if (!goldenLinked) {
+        devLog("generate", "shared-nm.link-skipped", { workspace });
+      }
+    } catch (error) {
+      devLog("generate", "shared-nm.error", {
+        workspace,
+        error: String(error),
+      });
+    }
+
+    // A successful golden link is authoritative: ensureSharedNodeModules
+    const shouldInstall =
+      !goldenLinked &&
+      (resetBeforeBuild ||
+        cacheMetadata?.dependencySignature !== dependencySignature ||
+        !(await pathExists(path.join(workspace, "node_modules"))));
+    let installMs = 0;
+    let install: BuildCommandResult = { ok: true, log: "" };
+
+    installSkipped = !shouldInstall;
+
+    if (shouldInstall) {
+      const installStartedAt = Date.now();
+      install = await commandRunner(
+        [BUNDLED_RUNNER, "install", "--ignore-scripts"],
+        workspace,
+      );
+      installMs = Date.now() - installStartedAt;
+
+      if (!install.ok) {
+        return { ...install, distFiles: [] };
+      }
+
+      await writeBuildCacheMetadata(metadataPath, {
+        dependencySignature,
+        runtimeProfile: manifest.runtimeProfile,
+        schemaVersion: 1,
+      });
+    } else if (goldenLinked) {
+      // Mirror the install-success path so repeat builds skip via sig-match.
+      await writeBuildCacheMetadata(metadataPath, {
+        dependencySignature,
+        runtimeProfile: manifest.runtimeProfile,
+        schemaVersion: 1,
+      });
+    }
+
+    // tsc gates vite (same failure semantics as `tsc -b && vite build` in a
+    const tscStartedAt = Date.now();
+    const tsc = await commandRunner(
+      [BUNDLED_RUNNER, "x", "tsc", "-b"],
+      workspace,
+    );
+    const viteStartedAt = Date.now();
+    let vite: BuildCommandResult = { ok: true, log: "" };
+
+    if (tsc.ok) {
+      vite = await commandRunner(
+        [BUNDLED_RUNNER, "x", "vite", "build"],
+        workspace,
+      );
+    }
+    const tscMs = viteStartedAt - tscStartedAt;
+    const viteMs = tsc.ok ? Date.now() - viteStartedAt : 0;
+    const buildOk = tsc.ok && vite.ok;
+    const collectStartedAt = Date.now();
+    let distFiles: GeneratedDistFile[] = [];
+    let collectionError = "";
+
+    if (buildOk) {
+      try {
+        distFiles = await collectDistFiles(path.join(workspace, "dist"));
+      } catch (error) {
+        collectionError =
+          error instanceof Error
+            ? error.message
+            : "Generated dist collection failed.";
+      }
+    }
+
+    const log = [
+      createBuildTimingLog({
+        buildMs: tscMs + viteMs,
+        cacheReset: resetBeforeBuild,
+        collectMs: Date.now() - collectStartedAt,
+        installMs,
+        installSkipped,
+        tscMs,
+        totalMs: Date.now() - startedAt,
+        viteMs,
+      }),
+      install.log,
+      tsc.log,
+      vite.log,
+      collectionError,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    return { distFiles, ok: buildOk && !collectionError, log };
+  }
+
+  let result = await attemptBuild(resetWorkspace);
+
+  if (!result.ok && !resetWorkspace) {
+    resetWorkspace = true;
+    result = await attemptBuild(true);
+  }
+
+  return result;
+}
+
+export async function runCommand(
   command: string[],
   cwd: string,
-): Promise<BuildGeneratedProjectResult> {
+  timeoutMs = getGeneratedBuildTimeoutMs(),
+): Promise<BuildCommandResult> {
   return await new Promise((resolve) => {
     const child = spawn(command[0], command.slice(1), {
       cwd,
@@ -133,52 +481,286 @@ async function runCommand(
         PATH: process.env.PATH ?? "",
         NODE_ENV: "production",
       },
-      shell: process.platform === "win32",
+      shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let output = "";
-    const timeout = setTimeout(() => {
-      child.kill();
-      resolve({
-        distFiles: [],
-        ok: false,
-        log: truncateLog(`${output}\nBuild timed out.`),
-      });
-    }, BUILD_TIMEOUT_MS);
+    let outputTruncated = false;
 
-    child.stdout.on("data", (chunk: Buffer) => {
+    function appendOutput(chunk: Buffer) {
       output += chunk.toString();
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      output += chunk.toString();
-    });
+
+      if (output.length > MAX_IN_FLIGHT_LOG_LENGTH) {
+        output = output.slice(-MAX_IN_FLIGHT_LOG_LENGTH);
+        outputTruncated = true;
+      }
+    }
+
+    function capturedOutput() {
+      return outputTruncated
+        ? `[earlier build output truncated]\n${output}`
+        : output;
+    }
+
+    const timeout = setTimeout(
+      () => {
+        child.kill();
+        resolve({
+          ok: false,
+          log: truncateLog(`${capturedOutput()}\nBuild timed out.`),
+        });
+      },
+      Math.max(1, Math.round(timeoutMs)),
+    );
+
+    child.stdout.on("data", appendOutput);
+    child.stderr.on("data", appendOutput);
     child.on("error", (error) => {
       clearTimeout(timeout);
       resolve({
-        distFiles: [],
         ok: false,
-        log: truncateLog(`${output}\n${error.message}`),
+        log: truncateLog(`${capturedOutput()}\n${error.message}`),
       });
     });
     child.on("close", (code) => {
       clearTimeout(timeout);
       resolve({
-        distFiles: [],
         ok: code === 0,
-        log: truncateLog(output.trim()),
+        log: truncateLog(capturedOutput().trim()),
       });
     });
   });
 }
 
+async function syncGeneratedProjectFiles(
+  root: string,
+  files: GeneratedProjectFile[],
+) {
+  const expectedFiles = new Map<string, string>();
+
+  for (const file of files) {
+    assertSafeProjectFilePath(file.path);
+    expectedFiles.set(file.path, file.content);
+  }
+
+  await removeStaleWorkspaceFiles(root, expectedFiles);
+
+  for (const [filePath, content] of expectedFiles) {
+    const target = resolveSafeBuildWorkspacePath(root, filePath);
+    const existing = await readFile(target, "utf8").catch(() => null);
+
+    if (existing === content) {
+      continue;
+    }
+
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, content, "utf8");
+  }
+}
+
+async function removeStaleWorkspaceFiles(
+  root: string,
+  expectedFiles: Map<string, string>,
+) {
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+
+  for (const entry of entries) {
+    if (entry.name === "node_modules") {
+      continue;
+    }
+
+    const absolute = path.join(root, entry.name);
+
+    if (entry.isDirectory()) {
+      await removeStaleWorkspaceFiles(absolute, expectedFiles);
+      await removeEmptyDirectory(absolute);
+      continue;
+    }
+
+    if (!entry.isFile()) {
+      await rm(absolute, { force: true, recursive: true });
+      continue;
+    }
+
+    const relative = path.relative(root, absolute).replace(/\\/g, "/");
+
+    // Per-workspace caches (tsbuildinfo, vite cacheDir, build metadata)
+    if (relative.startsWith(".cache/generated-app/")) {
+      continue;
+    }
+
+    if (!expectedFiles.has(relative)) {
+      await rm(absolute, { force: true });
+    }
+  }
+}
+
+async function removeEmptyDirectory(directory: string) {
+  const entries = await readdir(directory).catch(() => ["not-empty"]);
+
+  if (!entries.length) {
+    await rm(directory, { force: true, recursive: true });
+  }
+}
+
+function resolveSafeBuildWorkspacePath(root: string, filePath: string) {
+  assertSafeProjectFilePath(filePath);
+  const resolvedRoot = path.resolve(root);
+  const target = path.resolve(resolvedRoot, filePath);
+
+  if (!target.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw new Error(`Unsafe generated file path: ${filePath}`);
+  }
+
+  return target;
+}
+
+export function createDependencySignature(
+  files: GeneratedProjectFile[],
+  manifest: {
+    packageManager: "bun";
+    runtimeProfile: string;
+    templateId: string;
+    templateVersion: string;
+  },
+) {
+  const packageFile = files.find((file) => file.path === "package.json");
+  const packageJson = packageFile ? parseStableJson(packageFile.content) : null;
+
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        bunVersion: process.versions.bun || "unknown",
+        packageJson,
+        packageManager: manifest.packageManager,
+        runtimeProfile: manifest.runtimeProfile,
+        templateId: manifest.templateId,
+        templateVersion: manifest.templateVersion,
+      }),
+    )
+    .digest("hex");
+}
+
+function parseStableJson(value: string) {
+  try {
+    return sortJson(JSON.parse(value));
+  } catch {
+    return value;
+  }
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([keyA], [keyB]) => keyA.localeCompare(keyB))
+        .map(([key, item]) => [key, sortJson(item)]),
+    );
+  }
+
+  return value;
+}
+
+async function readBuildCacheMetadata(
+  metadataPath: string,
+): Promise<BuildCacheMetadata | null> {
+  const raw = await readFile(metadataPath, "utf8").catch(() => "");
+
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<BuildCacheMetadata>;
+
+    if (
+      parsed.schemaVersion === 1 &&
+      typeof parsed.dependencySignature === "string" &&
+      typeof parsed.runtimeProfile === "string"
+    ) {
+      return parsed as BuildCacheMetadata;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+async function writeBuildCacheMetadata(
+  metadataPath: string,
+  metadata: BuildCacheMetadata,
+) {
+  await mkdir(path.dirname(metadataPath), { recursive: true });
+  await writeFile(metadataPath, JSON.stringify(metadata, null, 2), "utf8");
+}
+
+function resolveBuildWorkspaceRoot(root?: string) {
+  return path.resolve(
+    root ||
+      process.env.PROJECT_BUILD_WORKSPACE_DIR ||
+      path.join(".data", "project-build-workspaces"),
+  );
+}
+
+function toSafeWorkspacePart(value: string) {
+  return value.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 120) || "unknown";
+}
+
+async function pathExists(target: string) {
+  return stat(target)
+    .then(() => true)
+    .catch(() => false);
+}
+
+function createBuildTimingLog({
+  buildMs,
+  cacheReset,
+  collectMs,
+  installMs,
+  installSkipped,
+  tscMs,
+  totalMs,
+  viteMs,
+}: {
+  buildMs: number;
+  cacheReset: boolean;
+  collectMs: number;
+  installMs: number;
+  installSkipped: boolean;
+  tscMs: number;
+  totalMs: number;
+  viteMs: number;
+}) {
+  return `[umkm:build] timings ${JSON.stringify({
+    buildMs,
+    cacheReset,
+    collectMs,
+    installMs,
+    installSkipped,
+    tscMs,
+    totalMs,
+    viteMs,
+  })}`;
+}
+
 function truncateLog(value: string) {
-  return value.length > MAX_LOG_LENGTH
-    ? `${value.slice(0, MAX_LOG_LENGTH)}\n...[truncated]`
-    : value;
+  const bounded =
+    value.length > MAX_LOG_LENGTH
+      ? `[earlier output truncated]\n${value.slice(-MAX_LOG_LENGTH)}`
+      : value;
+
+  return sanitizeBuildLog(bounded);
 }
 
 async function collectDistFiles(root: string): Promise<GeneratedDistFile[]> {
   const files: GeneratedDistFile[] = [];
+  const budget = getGeneratedResourceBudget("dist");
+  let totalBytes = 0;
 
   async function walk(current: string) {
     const entries = await readdir(current, { withFileTypes: true });
@@ -197,8 +779,33 @@ async function collectDistFiles(root: string): Promise<GeneratedDistFile[]> {
 
       const relativePath = path.relative(root, absolute).replace(/\\/g, "/");
       assertSafeProjectFilePath(relativePath);
+      const fileSize = (await stat(absolute)).size;
+
+      if (files.length + 1 > budget.maxFiles) {
+        throw new Error(`Generated dist exceeds ${budget.maxFiles} files.`);
+      }
+
+      if (fileSize > budget.maxFileBytes) {
+        throw new Error(
+          `Generated dist file exceeds ${budget.maxFileBytes} bytes: ${relativePath}`,
+        );
+      }
+
+      totalBytes += fileSize;
+
+      if (totalBytes > budget.maxTotalBytes) {
+        throw new Error(
+          `Generated dist exceeds ${budget.maxTotalBytes} aggregate bytes.`,
+        );
+      }
+
+      const isBinaryImage = /\.(png|jpe?g|webp|gif|ico)$/i.test(relativePath);
+      const content = isBinaryImage
+        ? (await readFile(absolute)).toString("base64")
+        : await readFile(absolute, "utf8");
+
       files.push({
-        content: await readFile(absolute, "utf8"),
+        content,
         contentType: getContentType(relativePath),
         path: relativePath,
       });
@@ -230,78 +837,64 @@ function getContentType(filePath: string) {
     return "image/svg+xml";
   }
 
+  if (filePath.endsWith(".png")) {
+    return "image/png";
+  }
+
+  if (filePath.endsWith(".jpg") || filePath.endsWith(".jpeg")) {
+    return "image/jpeg";
+  }
+
+  if (filePath.endsWith(".webp")) {
+    return "image/webp";
+  }
+
   return "text/plain; charset=utf-8";
 }
 
-export function createGeneratedProjectFiles(
+async function materializeProjectAssetsToWorkspace(
+  workspace: string,
   projectId: string,
-  schema: ProjectSiteSchema,
-): GeneratedProjectFile[] {
-  return [
-    {
-      path: ".umkmcepat/project.json",
-      content: json({
-        schemaVersion: 1,
-        projectId,
-        template: "vite-react-frontend-static-v1",
-      }),
-    },
-    {
-      path: "package.json",
-      content: json({
-        name:
-          schema.businessName
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, "-")
-            .replace(/^-|-$/g, "") || "umkm-website",
-        private: true,
-        type: "module",
-        scripts: {
-          dev: "vite dev",
-          build: "vite build",
-          preview: "vite preview",
-        },
-        dependencies: {
-          "@vitejs/plugin-react": "5.2.0",
-          vite: "8.0.16",
-          typescript: "5.8.3",
-          react: "19.2.0",
-          "react-dom": "19.2.0",
-          tailwindcss: "4.2.1",
-          "@tailwindcss/vite": "4.2.1",
-          "lucide-react": "0.575.0",
-        },
-        devDependencies: {},
-      }),
-    },
-    {
-      path: "vite.config.ts",
-      content: `import { defineConfig } from "vite";\nimport react from "@vitejs/plugin-react";\nimport tailwindcss from "@tailwindcss/vite";\n\nexport default defineConfig({ base: "./", plugins: [react(), tailwindcss()] });\n`,
-    },
-    {
-      path: "src/data/site.ts",
-      content: `export const site = ${json(schema)} as const;\n`,
-    },
-    {
-      path: "src/App.tsx",
-      content: `import { site } from "./data/site";\nimport "./styles.css";\n\nexport default function App() {\n  return (\n    <main style={{ background: site.theme.background, color: site.theme.foreground }}>\n      <nav className="nav">\n        <strong>{site.businessName}</strong>\n        <span>{site.audience}</span>\n      </nav>\n      <section className="hero">\n        <div>\n          <p className="eyebrow" style={{ color: site.theme.accent }}>{site.eyebrow}</p>\n          <h1>{site.headline}</h1>\n          <p className="lead">{site.subheadline}</p>\n          <div className="actions">\n            <a className="primary" href="#contact">{site.primaryCta}</a>\n            <a className="secondary" href="#details">{site.secondaryCta}</a>\n          </div>\n        </div>\n        <aside className="offer">\n          <span>Penawaran utama</span>\n          <h2>{site.offer}</h2>\n          <ul>{site.trustPoints.map((point) => <li key={point}>{point}</li>)}</ul>\n        </aside>\n      </section>\n      <section id="details" className="sections">\n        {site.sections.map((section, index) => (\n          <article key={section.title}>\n            <span>{String(index + 1).padStart(2, "0")}</span>\n            <h2>{section.title}</h2>\n            <p>{section.body}</p>\n          </article>\n        ))}\n      </section>\n      <section id="contact" className="cta">\n        <h2>Siap bantu pelanggan mengambil langkah berikutnya.</h2>\n        <a className="primary" href="https://wa.me/">{site.primaryCta}</a>\n      </section>\n    </main>\n  );\n}\n`,
-    },
-    {
-      path: "src/main.tsx",
-      content: `import { createRoot } from "react-dom/client";\nimport App from "./App";\n\ncreateRoot(document.getElementById("root")!).render(<App />);\n`,
-    },
-    {
-      path: "index.html",
-      content: `<div id="root"></div><script type="module" src="/src/main.tsx"></script>\n`,
-    },
-    {
-      path: "src/styles.css",
-      content: `@import "tailwindcss";\n*{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,sans-serif}main{min-height:100dvh}.nav{display:flex;justify-content:space-between;padding:24px clamp(20px,5vw,72px);border-bottom:1px solid rgba(0,0,0,.1)}.hero{display:grid;grid-template-columns:1.15fr .85fr;gap:48px;padding:clamp(40px,8vw,112px) clamp(20px,5vw,72px)}.eyebrow{text-transform:uppercase;letter-spacing:.16em;font-weight:700;font-size:13px}h1{max-width:850px;font-size:clamp(56px,9vw,120px);line-height:.86;letter-spacing:-.08em;margin:20px 0}h2{letter-spacing:-.05em}.lead{max-width:620px;font-size:22px;line-height:1.55;opacity:.72}.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:32px}.primary,.secondary{display:inline-flex;align-items:center;justify-content:center;border-radius:14px;padding:14px 20px;text-decoration:none;font-weight:700}.primary{background:#111;color:white}.secondary{border:1px solid rgba(0,0,0,.16);color:inherit}.offer{border-radius:34px;padding:32px;min-height:420px;background:linear-gradient(145deg,rgba(255,255,255,.9),rgba(255,255,255,.48));box-shadow:inset 24px 0 80px rgba(255,94,39,.18),18px 18px 0 rgba(0,0,0,.78)}.offer h2{font-size:36px}.offer li{margin:10px 0}.sections{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;padding:0 clamp(20px,5vw,72px) 72px}.sections article{border:1px solid rgba(0,0,0,.1);border-radius:24px;padding:28px;background:rgba(255,255,255,.55)}.sections span{font-size:12px;font-weight:800;color:#ff5e27}.sections p{line-height:1.7;opacity:.72}.cta{margin:0 clamp(20px,5vw,72px) 72px;border-radius:32px;padding:40px;background:#111;color:white}.cta h2{font-size:40px;max-width:720px}@media(max-width:760px){.nav,.hero{display:block}.offer{margin-top:36px;min-height:320px}.sections{grid-template-columns:1fr}h1{font-size:56px}}\n`,
-    },
-    {
-      path: "AGENTS.md",
-      content:
-        "# Generated UMKM Cepat project\n\nKeep this project static/frontend-only unless the owner explicitly enables backend features. Use Bun. Prefer Tailwind/CSS and React components. Do not add dependencies without a real need.\n",
-    },
-  ];
+): Promise<void> {
+  if (
+    !projectId ||
+    projectId.includes("test") ||
+    projectId.includes("mock") ||
+    projectId === "prewarm"
+  ) {
+    return;
+  }
+  try {
+    const assets = await prisma.projectAsset.findMany({
+      where: { projectId },
+      select: { id: true, ref: true },
+    });
+    if (!assets.length) {
+      return;
+    }
+    const imagesDir = path.join(workspace, "public", "images");
+    await mkdir(imagesDir, { recursive: true });
+
+    for (const asset of assets) {
+      try {
+        const { body } = await readProjectAsset(asset.ref);
+        const formatMatch = asset.ref.match(/\.([a-z0-9]+)$/i);
+        const ext = formatMatch ? formatMatch[1] : "png";
+        await writeFile(path.join(imagesDir, `${asset.id}.${ext}`), body);
+        if (ext !== "png") {
+          await writeFile(path.join(imagesDir, `${asset.id}.png`), body);
+        }
+      } catch {
+        // Fail open if single asset S3 fetch fails
+      }
+    }
+  } catch {
+    // Fail open if DB unavailable
+  }
 }
+
+export {
+  createGeneratedSourceSnapshotMetadata,
+  createGeneratedProjectFiles,
+  createGeneratedViteTanStackStarterFiles,
+} from "@/lib/projects/generated-starter";

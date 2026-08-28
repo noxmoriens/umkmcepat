@@ -1,0 +1,159 @@
+import { createFileRoute } from "@tanstack/react-router";
+
+import { auth } from "@/lib/auth/auth";
+import { prisma } from "@/lib/prisma";
+import { addMessage, invalidateUnreadCache } from "@/lib/support/service";
+import { mapToUserFacingError } from "@/lib/user-facing-error";
+
+export const Route = createFileRoute("/api/support/tickets/$ticketId")({
+  server: {
+    handlers: {
+      GET: async ({ params }) => {
+        const session = await auth();
+        if (!session?.user?.id) {
+          return Response.json(
+            { message: "Masuk dulu untuk melanjutkan." },
+            { status: 401 },
+          );
+        }
+
+        // Mark admin messages as read when User opens /support/$ticketId
+        await prisma.supportMessage
+          .updateMany({
+            where: {
+              ticketId: params.ticketId,
+              authorRole: "admin",
+              readAt: null,
+            },
+            data: {
+              readAt: new Date(),
+            },
+          })
+          .catch(() => {});
+
+        // Invalidate unread cache so counts sync immediately
+        invalidateUnreadCache(session.user.id);
+
+        const ticket = await prisma.supportTicket.findUnique({
+          where: { id: params.ticketId },
+          include: {
+            messages: {
+              orderBy: { createdAt: "asc" },
+            },
+          },
+        });
+
+        if (!ticket) {
+          return Response.json(
+            { message: "Tiket tidak ditemukan." },
+            { status: 404 },
+          );
+        }
+
+        const isAuthorizedUser =
+          ticket.userId === session.user.id || session.user.admin === true;
+
+        if (!isAuthorizedUser) {
+          const dbUser = await prisma.user.findUnique({
+            where: { id: session.user.id },
+            select: { email: true },
+          });
+          const adminEmails = (process.env.ADMIN_EMAILS || "")
+            .split(",")
+            .map((e) => e.trim().toLowerCase());
+          const isDbAdmin = dbUser?.email
+            ? adminEmails.includes(dbUser.email.toLowerCase())
+            : false;
+
+          if (!isDbAdmin) {
+            return Response.json(
+              { message: "Akses ditolak." },
+              { status: 403 },
+            );
+          }
+        }
+
+        return Response.json({ ticket });
+      },
+
+      POST: async ({ request, params }) => {
+        const session = await auth();
+        if (!session?.user?.id) {
+          return Response.json(
+            { message: "Masuk dulu untuk melanjutkan." },
+            { status: 401 },
+          );
+        }
+
+        const ticket = await prisma.supportTicket.findUnique({
+          where: { id: params.ticketId },
+        });
+
+        if (!ticket) {
+          return Response.json(
+            { message: "Tiket tidak ditemukan." },
+            { status: 404 },
+          );
+        }
+
+        const isAuthorizedPoster =
+          ticket.userId === session.user.id || session.user.admin === true;
+
+        if (!isAuthorizedPoster) {
+          const dbUser = await prisma.user.findUnique({
+            where: { id: session.user.id },
+            select: { email: true },
+          });
+          const adminEmails = (process.env.ADMIN_EMAILS || "")
+            .split(",")
+            .map((e) => e.trim().toLowerCase());
+          const isDbAdmin = dbUser?.email
+            ? adminEmails.includes(dbUser.email.toLowerCase())
+            : false;
+
+          if (!isDbAdmin) {
+            return Response.json(
+              { message: "Akses ditolak." },
+              { status: 403 },
+            );
+          }
+        }
+
+        const body = (await request.json().catch(() => ({}))) as {
+          body?: string;
+          assetIds?: string[];
+        };
+
+        const messageText =
+          typeof body.body === "string" ? body.body.trim() : "";
+        const assetIds = Array.isArray(body.assetIds) ? body.assetIds : [];
+
+        if (!messageText && assetIds.length === 0) {
+          return Response.json(
+            { message: "Tulis pesan atau lampirkan gambar." },
+            { status: 400 },
+          );
+        }
+
+        try {
+          const result = await addMessage({
+            ticketId: params.ticketId,
+            authorId: session.user.id,
+            authorRole: "user",
+            body: messageText,
+            assetIds,
+          });
+
+          return Response.json(result, { status: 201 });
+        } catch (error) {
+          const raw = error instanceof Error ? error.message : "";
+          console.error("[support] ticket message failed:", raw);
+          return Response.json(
+            { message: mapToUserFacingError(raw) },
+            { status: 400 },
+          );
+        }
+      },
+    },
+  },
+});

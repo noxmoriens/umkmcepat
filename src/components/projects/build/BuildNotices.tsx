@@ -1,0 +1,114 @@
+"use client";
+
+import { X } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+
+export function HeldBuildRecommendationNotice({
+  buildComplete = false,
+  canBuild = true,
+  onBuild,
+  onDismiss,
+  onOpen,
+}: {
+  buildComplete?: boolean;
+  canBuild?: boolean;
+  onBuild: () => void;
+  onDismiss?: () => void;
+  onOpen: () => void;
+}) {
+  return (
+    <div className="relative rounded-2xl border border-border bg-card p-4 shadow-xs">
+      <div className="flex items-start justify-between gap-2 pr-6">
+        <p className="text-sm font-semibold text-foreground">
+          Rancangan website disimpan
+        </p>
+        {onDismiss ? (
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label="Tutup pemberitahuan rancangan"
+            className="absolute right-3 top-3 inline-flex size-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground cursor-pointer"
+          >
+            <X className="size-3.5" />
+          </button>
+        ) : null}
+      </div>
+      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+        Lanjutkan diskusi dulu, atau buka rancangan saat siap membuat website.
+      </p>
+      <div className="mt-3 flex items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onOpen}
+          className="h-8 flex-1 rounded-lg border-border bg-transparent px-3 text-xs text-foreground hover:bg-muted cursor-pointer"
+        >
+          Buka rancangan
+        </Button>
+        <Button
+          type="button"
+          disabled={!canBuild}
+          onClick={onBuild}
+          className="h-8 flex-1 rounded-lg bg-[#1c1c1c] text-white px-3 text-xs hover:bg-black disabled:opacity-50 dark:bg-surface-warm-white dark:text-[#141413] dark:hover:bg-white cursor-pointer"
+        >
+          {buildComplete ? "Perbarui website" : "Mulai buat website"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+export function CompletedBuildNotice({
+  onDiscuss,
+  onPreview,
+  variant = "ready",
+}: {
+  onDiscuss: () => void;
+  onPreview: () => void;
+  variant?: "ready" | "recovery";
+}) {
+  const isRecovery = variant === "recovery";
+
+  return (
+    <div
+      className={`rounded-2xl border px-spacing-5 py-spacing-4 shadow-xs dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.025)] ${
+        isRecovery
+          ? "border-status-warning-border bg-status-warning-subtle text-foreground dark:border-[#f6d365]/18 dark:bg-[#242015]"
+          : "border-status-success-border bg-status-success-subtle text-foreground dark:border-[#8ce99a]/18 dark:bg-[#1d211c]"
+      }`}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-spacing-4">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-foreground dark:text-surface-warm-white">
+            {isRecovery
+              ? "Website terakhir masih aman"
+              : "Website siap dilihat"}
+          </p>
+          <p className="mt-spacing-1 text-xs leading-5 text-text-secondary dark:text-surface-warm-white/52">
+            {isRecovery
+              ? "Pembuatan terbaru belum selesai, tapi tampilan terakhir yang berhasil tetap aman. Kamu bisa cek hasil lama atau lanjut ngobrol dengan AI."
+              : "Lihat hasilnya dulu. Kalau ada yang kurang pas, lanjut ngobrol dengan AI."}
+          </p>
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-spacing-2">
+          <Button
+            type="button"
+            onClick={onPreview}
+            className="h-9 rounded-lg bg-foreground text-background px-spacing-4 text-xs hover:bg-foreground/90 dark:bg-surface-warm-white dark:text-foreground-primary dark:hover:bg-surface-warm-white/86 cursor-pointer"
+          >
+            Lihat website
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onDiscuss}
+            className="h-9 rounded-lg border-border bg-transparent px-spacing-4 text-xs text-foreground hover:bg-muted dark:border-surface-warm-white/12 dark:text-surface-warm-white/78 dark:hover:bg-surface-warm-white/8 cursor-pointer"
+          >
+            Chat dengan AI
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}

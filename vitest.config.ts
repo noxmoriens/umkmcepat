@@ -1,12 +1,6 @@
 import path from "node:path";
 
-import { storybookTest } from "@storybook/addon-vitest/vitest-plugin";
-import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
-
-const storybookConfigDir = path
-  .resolve(__dirname, ".storybook")
-  .replace(/\\/g, "/");
 
 export default defineConfig({
   optimizeDeps: {
@@ -16,6 +10,8 @@ export default defineConfig({
     alias: { "@": path.resolve(__dirname, "src") },
   },
   test: {
+    forceRerunTriggers: [],
+    testTimeout: 20_000,
     coverage: {
       watermarks: {
         statements: [0, 40],
@@ -26,22 +22,32 @@ export default defineConfig({
         extends: true,
         test: {
           environment: "node",
-          include: ["src/**/*.test.ts"],
+          include: [
+            "src/**/*.test.ts",
+            "src/**/*.test.tsx",
+            "tests/unit/**/*.test.ts",
+            "tests/unit/**/*.test.tsx",
+            "scripts/**/*.test.ts",
+            "tests/**/*.test.ts",
+          ],
           name: "unit",
         },
       },
       {
         extends: true,
-        plugins: [storybookTest({ configDir: storybookConfigDir })],
         test: {
-          name: `storybook:${storybookConfigDir}`,
-          browser: {
-            api: { port: 0 },
-            enabled: true,
-            headless: true,
-            instances: [{ browser: "chromium" }],
-            provider: playwright({}),
-          },
+          environment: "node",
+          include: ["tests/integration/**/*.itest.ts"],
+          name: "integration",
+          fileParallelism: false,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          environment: "node",
+          include: ["tests/browser/**/*.browser.test.ts"],
+          name: "browser",
         },
       },
     ],

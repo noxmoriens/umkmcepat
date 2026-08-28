@@ -1,30 +1,67 @@
-import Image from "next/image";
-import Link from "next/link";
+"use client";
 
 import { AuthButton } from "@/components/common/AuthButton";
+import { EnergyDisplay } from "@/components/common/EnergyDisplay";
+import { ThemeToggle } from "@/components/common/ThemeToggle";
+import { Image } from "@/components/ui/image";
+import { Link } from "@/components/ui/link";
+import { useSession } from "@/lib/auth/auth-client";
 
-export function Header() {
+export function Header({
+  devResetPending = false,
+  onDevReset,
+  showDevBanner = false,
+  showResetButton = false,
+}: {
+  devResetPending?: boolean;
+  onDevReset?: () => void;
+  showDevBanner?: boolean;
+  showResetButton?: boolean;
+} = {}) {
+  const { data: session } = useSession();
+  void session;
+
   return (
-    <header className="sticky top-0 z-50 w-full border-b border-surface-warm-white/10 bg-[#151515]/82 text-surface-warm-white backdrop-blur-xl">
-      <div className="mx-auto grid h-16 max-w-7xl grid-cols-[auto_1fr_auto] items-center px-spacing-7 sm:px-spacing-9 lg:px-spacing-10">
+    <header className="sticky top-0 z-50 w-full border-b border-black/10 bg-[#eceae4]/90 text-[#1c1c1c] backdrop-blur-md transition-colors duration-200 dark:border-white/[0.07] dark:bg-[#151515] dark:text-surface-warm-white">
+      {showDevBanner ? (
+        <div className="border-b border-accent-orange-border bg-accent-orange-subtle px-spacing-4 py-1 text-accent-orange">
+          <div className="mx-auto flex max-w-7xl items-center justify-center gap-spacing-3 text-[10px]">
+            <span>DEV: Mode Pengembang</span>
+            {showResetButton ? (
+              <button
+                className="rounded-radius-sm border border-accent-orange-border px-1.5 py-px text-[9px] font-semibold transition hover:bg-accent-orange-subtle disabled:opacity-50"
+                disabled={devResetPending}
+                onClick={onDevReset}
+                type="button"
+              >
+                {devResetPending ? "Mereset..." : "Reset Antrian"}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-2 px-3 sm:px-6 lg:px-8">
         <Link
           href="/"
-          className="flex items-center gap-2 justify-self-start whitespace-nowrap rounded-radius-md text-base font-semibold tracking-tight outline-none focus-visible:ring-2 focus-visible:ring-surface-warm-white focus-visible:ring-offset-2 focus-visible:ring-offset-[#151515] sm:text-lg"
+          className="flex min-w-0 shrink items-center gap-2 rounded-radius-md text-base font-semibold tracking-tight text-[#1c1c1c] outline-none dark:text-surface-warm-white sm:text-lg"
           aria-label="UMKM Cepat beranda"
         >
           <Image
             src="/brand/umkmcepat-logo.svg"
             alt="Logo UMKM Cepat"
-            width={32}
-            height={32}
+            width={28}
+            height={28}
             priority
+            className="shrink-0 sm:size-8"
           />
-          <span>UMKM Cepat</span>
+          <span className="truncate">UMKM Cepat</span>
         </Link>
 
-        <div aria-hidden="true" />
-
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex shrink-0 items-center justify-end gap-1.5 sm:gap-3">
+          <div className="hidden sm:flex sm:items-center sm:gap-3">
+            <EnergyDisplay />
+            <ThemeToggle />
+          </div>
           <AuthButton />
         </div>
       </div>

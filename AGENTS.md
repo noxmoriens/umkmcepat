@@ -4,11 +4,73 @@ Boot instructions for AI agents working on UMKM Cepat.
 
 ## Read first
 
-- `PRINCIPLES.md` — operating taste and quality bar.
-- `DEV.md` — local workflow, commands, quality gate.
-- `DESIGN.md` — required before UI, styling, layout, typography, colors, or components.
-- `docs/architecture.md` — required before project, workspace, renderer, publishing, provider, storage, auth, or AI gateway work.
-- `docs/deployment.md` — required before Docker, VPS, storage persistence, CI, or monitoring work.
+- `PRINCIPLES.md` → taste, engineering mindset, and senior developer standards
+- `DEV.md` → workflow, conventions, folder architecture, and typecheck/lint/test gates
+- `.agents/skills/codebase-steward/SKILL.md` → autonomous quality and codebase perfection audit
+- `PRODUCT.md` → product definition and business context
+- `DESIGN.md` → design system tokens and UI standards
+- `.agents/skills/unslop/SKILL.md` → unslop writing standard (cut AI tells, active voice, plain speech)
+- `docs/` → Obsidian-ready documentation hub and architecture overview
+
+---
+
+## What makes UMKM Cepat special
+
+A restrained, trustworthy site generation engine for Indonesian small business owners. Four non-negotiables:
+
+1. **Trust beats spectacle**: Visible progress, honest states, no fake awards, prices, reviews, or addresses.
+2. **One clear path**: Next action is obvious: discuss → build → preview → edit → publish.
+3. **Portable output**: Generated Vite + React + Tailwind standalone site with no vendor lock-in.
+4. **100% free to succeed**: Core features work on pilot energy grant (500k); booster is an optional upgrade, never a paywall.
+
+---
+
+## Rules — god-tier
+
+- **THE UNBREAKABLE BAR (NEVER LOWER THE TEST STANDARD)**: When a test fails, you MUST fix the production code and elevate the logic. NEVER soften assertions (e.g. replacing specific equality with loose `.toBeDefined()`), never delete or comment out valid boundary tests, and never write shallow pass-through tests just to get a cheap green check. If a test caught a break, fix the root cause.
+- **NEVER TEST AI RESPONSE CONTENT, CLASSNAMES, ANCHORS, OR STOCHASTIC OUTPUT (IRON LAW)**: Unit and TDD tests MUST NOT assert AI model prose, answer wording, Indonesian phrasing, exact className strings, Tailwind utility lists, HTML tag structures, anchor hrefs/IDs, palette hues, fonts, layout structure, card counts, section sequences, or generated source snapshots. Tests assert deterministic mechanical invariants only:
+  1. JSON Schemas (Zod validation)
+  2. Structure conformance, data types, and presence of required keys
+  3. Type narrowing and contract error handling
+  4. Hard deterministic boundaries (action URLs, route topology, package policies, security, compilation)
+     Never test exact className values, HTML markup strings, or regex-matched styling strings. Testing markup or styling creates rigid template-ish generator behavior. Rendered aesthetic quality and copy appeal belong exclusively to human evaluation and live browser reviews.
+- **Domain before file type**: Organize by feature or domain first (`src/components/admin/`, `src/lib/projects/`). Never create generic catch-all directories (`hooks/`, `utils/`, `helpers/`, `misc/`).
+- **Colocated tests by default**: Unit, component, and route tests sit directly beside the module they verify (`foo.ts` + `foo.test.ts`). Top-level `tests/` is strictly for cross-domain integration, real DB infrastructure, or browser audits.
+- **No `any` or `@ts-ignore`**: `any` disables the type-checker. Use `unknown` with narrowing or schema validation. Fix actual root causes.
+- **Self-explanatory code over comments**: Code must be obvious through clear names and modular structure. Never write multi-line block comments or banner dividers (`// ---`). Authored comments delete by default; keep only strictly necessary single-line invariant explanations.
+- **Solid as hell**: Nothing ships without `typecheck + lint + affected tests` passing together. CI is the ultimate gate. Run `bun run check` locally before handoff.
+- **Small and surgical**: One concern per change. A 50-line fix beats a 500-line refactor.
+- **Fail loud at trust boundaries**: Validate untrusted input at server boundaries and fail closed on auth, payment, or publishing failures.
+- **Always unslop**: Follow `.agents/skills/unslop/SKILL.md` across all code, prompt strings, and docs. Cut AI filler words, puffery, and passive voice.
+
+---
+
+## Where code lives
+
+- `src/lib/projects/` — brief flow, agent generator, visual review, and build worker logic
+- `src/routes/api.projects.*` — API endpoints for generation, preview, editing, and chat turns
+- `src/components/projects/workspace/` — workspace shell, history drawer, and canvas controls
+- `src/lib/storage/` — S3/R2 object storage client
+- `src/lib/projects/scaffold/` — shadcn Base UI registry and starter scaffold
+- `docs/notes/backlog.md` — Active Kanban task board (`Backlog`, `In Progress`, `Done`)
+
+---
+
+## Task Execution & Obsidian Backlog (Autonomous Loop)
+
+- `docs/notes/backlog.md` is the single source of truth for work items (`Backlog`, `In Progress`, `Needs Revision / Check Again`, `Ready for Review`, `Done`, `Future / Icebox`).
+- **Autonomous Backlog Skills**:
+  - `add-backlog`: Add isolated tasks with next sequential `[#XX]` code and domain tags.
+  - `do-backlog`: The unified execution orchestrator. Inspects revisions, ranks priorities, groups synergistic tasks into a clear plan, asks for developer confirmation, implements code + tests, and verifies via `bun run check`.
+  - `triage-ideas`: Triage raw thoughts from `ideas.md` into backlog tasks.
+- **Execution Priority**:
+  1. **Priority #1 (Revisions / Check Again)**: If items exist in `## Needs Revision / Check Again`, read developer notes/wikilinks (or perform a full end-to-end audit if notes are empty), fix issues until rock-solid, verify with `bun run check`, and move to `## Ready for Review`.
+  2. **Priority #2 (Resume)**: If an item is under `## In Progress`, drive that task to completion.
+  3. **Priority #3 (Next Task / Batch)**: If `## In Progress` and `## Needs Revision / Check Again` are empty, evaluate `## Backlog`, propose an execution batch to the user, move to `## In Progress`, implement colocated tests + minimal clean code, verify 100% green via `bun run check`, and move to `## Ready for Review`.
+  4. **Strict Review Boundary**: Agents NEVER move cards to `## Done`. Completed agent work ALWAYS stops at `## Ready for Review`. Only the human developer moves approved tasks to `## Done` (or moves them back to `## Needs Revision / Check Again` if changes are requested).
+- Raw developer brain dumps go into `docs/notes/ideas.md` and are triaged via `.agents/skills/triage-ideas/`. Timestamped backups of raw ideas live in `docs/notes/ideas-old/`. Personal notes live in `docs/notes/notes.md`. Long-term items park in `## Future / Icebox`.
+
+---
 
 ## Commands
 
@@ -18,34 +80,6 @@ cp .env.example .env
 bun run infra
 bun run db:migrate
 bun run dev
-bun run check
+bun run check        # Fast cached parallel check: locks + routes + format + lint + typecheck + tests + Knip + discipline + docs
+bun run verify       # Full verification suite before release
 ```
-
-Optional AI gateway:
-
-```bash
-bun run infra:ai
-```
-
-Optional Storybook:
-
-```bash
-bun run storybook
-bun run storybook:build
-bun run test:storybook
-```
-
-## Rules
-
-- Optimize for the next capable agent with zero session context: leave canonical docs, scripts, and checks clear enough that future work resumes in minutes, not archaeology.
-- Use Bun only; keep `bun.lock` as the canonical lockfile.
-- Work from `dev`; open PRs into `dev` unless maintainers say otherwise.
-- Keep changes small, focused, and easy to review.
-- Prefer deletion, reuse, platform features, and existing dependencies before adding code.
-- User-facing product UI copy uses Indonesian; developer-facing docs/code/logs/errors use English.
-- New reusable UI or repeated visual patterns must be added to Storybook first or in the same change.
-- Use Graphify for non-trivial codebase discovery when available; do not add it as a project dependency.
-- Docs are part of the change: if behavior, setup, env, architecture, provider, storage, deployment, UI system, or product flow changes, update the canonical doc in the same diff or state why docs did not change.
-- Run `bun run check` before handoff.
-- Do not run `bun run build` unless requested or touching build/deployment behavior.
-- Never commit `.env`, secrets, OAuth credentials, API keys, private data, local uploads, logs, screenshots, `.next/`, `.pi/`, `.browser/`, `graphify-out/`, `storybook-static/`, or coverage artifacts.

@@ -1,36 +1,109 @@
-import { NextResponse } from "next/server";
+import { getConfiguredProvider } from "@/lib/config/config";
 
-import { getConfiguredProvider } from "@/lib/config";
-
-type RateLimitType = "global" | "ai";
+type RateLimitType = "global" | "ai" | "build" | "otp";
+type RateLimitSubject = "ip" | "user";
 
 type Bucket = {
   count: number;
   resetAt: number;
 };
 
-const buckets = new Map<string, Bucket>();
-
-const limits: Record<RateLimitType, { limit: number; windowMs: number }> = {
-  global: { limit: 30, windowMs: 60_000 },
-  ai: { limit: 5, windowMs: 600_000 },
+type RateLimitConfig = {
+  limit: number;
+  windowMs: number;
 };
 
-function getClientIp(request: Request): string {
-  return (
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    request.headers.get("x-real-ip") ||
-    "127.0.0.1"
+const buckets = new Map<string, Bucket>();
+
+const defaults: Record<
+  RateLimitType,
+  Record<RateLimitSubject, RateLimitConfig>
+> = {
+  global: {
+    ip: { limit: 300, windowMs: 60_000 },
+    user: { limit: 300, windowMs: 60_000 },
+  },
+  ai: {
+    ip: { limit: 20, windowMs: 600_000 },
+    user: { limit: 60, windowMs: 600_000 },
+  },
+  build: {
+    ip: { limit: 5, windowMs: 3_600_000 },
+    user: { limit: 10, windowMs: 3_600_000 },
+  },
+  otp: {
+    ip: { limit: 10, windowMs: 300_000 },
+    user: { limit: 5, windowMs: 300_000 },
+  },
+};
+
+function isPlausibleIp(value: string | null | undefined): value is string {
+  if (!value) {
+    return false;
+  }
+  return value.length <= 45 && /^[0-9a-fA-F:.]+$/.test(value);
+}
+
+export function getClientIp(request: Request): string {
+  const cfConnectingIp = request.headers.get("cf-connecting-ip");
+  if (isPlausibleIp(cfConnectingIp)) {
+    return cfConnectingIp;
+  }
+
+  // Cloudflare appends the real client IP as the LAST hop and preserves any
+  const forwardedFor = request.headers.get("x-forwarded-for");
+  const lastHop = forwardedFor?.split(",").at(-1)?.trim();
+  if (isPlausibleIp(lastHop)) {
+    return lastHop;
+  }
+
+  const realIp = request.headers.get("x-real-ip");
+  if (isPlausibleIp(realIp)) {
+    return realIp;
+  }
+
+  return "127.0.0.1";
+}
+
+export async function getRateLimitConfig(
+  type: RateLimitType,
+  subject: RateLimitSubject,
+): Promise<RateLimitConfig> {
+  const fallback = defaults[type][subject];
+  const { getSetting } = await import("@/lib/config/app-settings");
+  const scope = type === "global" ? "global_ip" : `${type}_${subject}`;
+  const limit = await getSetting<number>(
+    `ratelimit.${scope}.requests`,
+    fallback.limit,
   );
+  const windowSeconds = await getSetting<number>(
+    `ratelimit.${scope}.window_seconds`,
+    fallback.windowMs / 1000,
+  );
+
+  return { limit, windowMs: windowSeconds * 1000 };
+}
+
+export function shouldEnforceProductRateLimit(
+  _type: RateLimitType,
+  _userId?: string,
+) {
+  // Always enforce rate limiting, even for authenticated users on product routes.
+  return true;
 }
 
 export async function checkRateLimit(
   request: Request,
   type: RateLimitType = "global",
+  userId?: string,
 ) {
   const provider = getConfiguredProvider("rateLimit");
 
   if (provider === "none") {
+    return null;
+  }
+
+  if (!shouldEnforceProductRateLimit(type, userId)) {
     return null;
   }
 
@@ -40,9 +113,11 @@ export async function checkRateLimit(
     );
   }
 
+  const subject: RateLimitSubject = userId ? "user" : "ip";
+  const subjectId = userId || getClientIp(request);
+  const config = await getRateLimitConfig(type, subject);
   const now = Date.now();
-  const config = limits[type];
-  const key = `${type}:${getClientIp(request)}`;
+  const key = `${type}:${subject}:${subjectId}`;
   const bucket = buckets.get(key);
 
   if (!bucket || bucket.resetAt <= now) {
@@ -57,10 +132,16 @@ export async function checkRateLimit(
   }
 
   const retryAfter = Math.ceil((bucket.resetAt - now) / 1000);
+  const waitLabel =
+    retryAfter >= 60
+      ? `${Math.ceil(retryAfter / 60)} menit`
+      : `${retryAfter} detik`;
 
-  return NextResponse.json(
+  return Response.json(
     {
-      message: `Terlalu banyak percobaan. Coba lagi dalam ${retryAfter} detik.`,
+      code: "rate_limited",
+      message: `Terlalu banyak percobaan. Coba lagi dalam ${waitLabel}.`,
+      retryAfter,
     },
     {
       status: 429,

@@ -1,0 +1,77 @@
+import { validateGeneratedPackagePolicy } from "@/lib/projects/generated-package-policy";
+
+export type GeneratedBuildPolicyFile = {
+  content: string;
+  path: string;
+};
+
+export type GeneratedBuildPolicyResult =
+  { issues: string[]; ok: false } | { issues: []; ok: true };
+
+export const PLATFORM_VITE_CONFIG = `import path from "path"
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+
+// https://vite.dev/config/
+export default defineConfig({
+  base: './',
+  // Per-workspace cache (default node_modules/.vite lives on the shared
+  cacheDir: '.cache/generated-app/vite',
+  plugins: [tailwindcss(), react()],
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+    },
+  },
+})
+`;
+
+const VITE_CONFIG_PATH = /^vite\.config\.(?:cjs|cts|js|mjs|mts|ts)$/;
+const EXECUTABLE_BUILD_CONFIG_PATH =
+  /^(?:postcss|rollup|tailwind)\.config\.(?:cjs|cts|js|mjs|mts|ts)$/;
+
+export function validateGeneratedBuildPolicy(
+  files: GeneratedBuildPolicyFile[],
+  runtimeProfile: string,
+): GeneratedBuildPolicyResult {
+  const packageResult = validateGeneratedPackagePolicy(files, runtimeProfile);
+  const issues = packageResult.ok ? [] : [...packageResult.issues];
+  const viteConfigs = files.filter((file) => VITE_CONFIG_PATH.test(file.path));
+  const unsupportedExecutableConfigs = files.filter((file) =>
+    EXECUTABLE_BUILD_CONFIG_PATH.test(file.path),
+  );
+
+  issues.push(
+    ...unsupportedExecutableConfigs.map(
+      (file) => `Executable build configuration is not allowed: ${file.path}`,
+    ),
+  );
+
+  if (viteConfigs.length > 1) {
+    issues.push("Only one platform-owned Vite configuration is allowed.");
+  }
+
+  for (const config of viteConfigs) {
+    if (
+      config.path !== "vite.config.ts" ||
+      normalizeConfig(config.content) !== normalizeConfig(PLATFORM_VITE_CONFIG)
+    ) {
+      issues.push(
+        "Vite configuration must match the platform-owned configuration.",
+      );
+    }
+  }
+
+  return issues.length ? { issues, ok: false } : { issues: [], ok: true };
+}
+
+function normalizeConfig(value: string) {
+  return value
+    .replace(/\r\n/g, "\n")
+    .replace(/["']/g, "'")
+    .replace(/;/g, "")
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}

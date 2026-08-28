@@ -13,7 +13,13 @@ type Sponsor = {
 
 const PAGE_SIZE = 10;
 
-export function SponsorTable({ sponsors }: { sponsors: Sponsor[] }) {
+export function SponsorTable({
+  sponsors,
+  flat = false,
+}: {
+  sponsors: Sponsor[];
+  flat?: boolean;
+}) {
   const [page, setPage] = useState(1);
   const pageCount = Math.max(1, Math.ceil(sponsors.length / PAGE_SIZE));
   const visibleSponsors = useMemo(() => {
@@ -24,27 +30,87 @@ export function SponsorTable({ sponsors }: { sponsors: Sponsor[] }) {
   const end = Math.min(page * PAGE_SIZE, sponsors.length);
 
   return (
-    <div className="mt-spacing-8 overflow-hidden rounded-[22px] border border-surface-warm-white/10">
-      <table className="w-full text-sm">
-        <thead className="bg-surface-warm-white/[0.055] text-left text-surface-warm-white/50">
+    <div
+      className={
+        flat
+          ? "mt-spacing-8 border-t border-black/15 transition-colors dark:border-white/[0.07]"
+          : "mt-spacing-8 overflow-hidden rounded-[22px] border border-black/15 bg-black/[0.02] transition-colors dark:border-surface-warm-white/10 dark:bg-[#151515]"
+      }
+    >
+      <ul className="divide-y divide-black/12 transition-colors dark:divide-surface-warm-white/10 sm:hidden">
+        {visibleSponsors.map((sponsor) => (
+          <li
+            key={`${sponsor.donorName}-${sponsor.date}`}
+            className="flex flex-col gap-spacing-2 px-spacing-5 py-spacing-4"
+          >
+            <div className="flex items-center justify-between gap-spacing-3">
+              <p className="font-semibold text-[#1c1c1c] dark:text-surface-warm-white">
+                {sponsor.donorName}
+              </p>
+              <span className="text-xs text-[#5f5f5d] dark:text-surface-warm-white/50">
+                {sponsor.date}
+              </span>
+            </div>
+            <div className="text-sm">
+              {sponsor.brandUrl ? (
+                <a
+                  href={sponsor.brandUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-semibold text-[#1c1c1c] underline decoration-black/30 underline-offset-4 transition hover:decoration-black dark:text-surface-warm-white dark:decoration-surface-warm-white/24 dark:hover:decoration-surface-warm-white"
+                >
+                  {sponsor.brandName}
+                </a>
+              ) : (
+                <span className="font-semibold text-[#1c1c1c] dark:text-surface-warm-white">
+                  {sponsor.brandName}
+                </span>
+              )}
+            </div>
+            <p className="text-sm text-[#3f3f3d] dark:text-surface-warm-white/70">
+              {sponsor.support}
+            </p>
+            <p className="text-sm font-semibold text-[#1c1c1c] dark:text-surface-warm-white">
+              {sponsor.value}
+            </p>
+          </li>
+        ))}
+      </ul>
+
+      <table className="hidden w-full text-sm sm:table">
+        <thead
+          className={
+            flat
+              ? "border-b border-black/15 text-left font-semibold text-[#3f3f3d] dark:border-white/[0.07] dark:text-surface-warm-white/50"
+              : "bg-black/[0.04] text-left font-semibold text-[#3f3f3d] dark:bg-surface-warm-white/[0.055] dark:text-surface-warm-white/50"
+          }
+        >
           <tr>
-            <th className="px-spacing-5 py-spacing-4 font-medium">Tanggal</th>
-            <th className="px-spacing-5 py-spacing-4 font-medium">Donatur</th>
-            <th className="px-spacing-5 py-spacing-4 font-medium">Sumber</th>
-            <th className="px-spacing-5 py-spacing-4 font-medium">Dukungan</th>
-            <th className="px-spacing-5 py-spacing-4 text-right font-medium">
+            <th className="px-spacing-5 py-spacing-4 font-semibold">Tanggal</th>
+            <th className="px-spacing-5 py-spacing-4 font-semibold">Donatur</th>
+            <th className="px-spacing-5 py-spacing-4 font-semibold">Sumber</th>
+            <th className="px-spacing-5 py-spacing-4 font-semibold">
+              Dukungan
+            </th>
+            <th className="px-spacing-5 py-spacing-4 text-right font-semibold">
               Nilai
             </th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-surface-warm-white/10">
+        <tbody
+          className={
+            flat
+              ? "divide-y divide-black/12 dark:divide-white/[0.07]"
+              : "divide-y divide-black/12 dark:divide-surface-warm-white/10"
+          }
+        >
           {visibleSponsors.map((sponsor) => (
             <tr key={`${sponsor.donorName}-${sponsor.date}`}>
-              <td className="px-spacing-5 py-spacing-5 text-surface-warm-white/58">
+              <td className="px-spacing-5 py-spacing-5 text-[#3f3f3d] dark:text-surface-warm-white/58">
                 {sponsor.date}
               </td>
               <td className="px-spacing-5 py-spacing-5">
-                <p className="font-semibold text-surface-warm-white">
+                <p className="font-semibold text-[#1c1c1c] dark:text-surface-warm-white">
                   {sponsor.donorName}
                 </p>
               </td>
@@ -54,20 +120,20 @@ export function SponsorTable({ sponsors }: { sponsors: Sponsor[] }) {
                     href={sponsor.brandUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="font-semibold text-surface-warm-white underline decoration-surface-warm-white/24 underline-offset-4 transition hover:decoration-surface-warm-white"
+                    className="font-semibold text-[#1c1c1c] underline decoration-black/30 underline-offset-4 transition hover:decoration-black dark:text-surface-warm-white dark:decoration-surface-warm-white/24 dark:hover:decoration-surface-warm-white"
                   >
                     {sponsor.brandName}
                   </a>
                 ) : (
-                  <span className="font-semibold text-surface-warm-white">
+                  <span className="font-semibold text-[#1c1c1c] dark:text-surface-warm-white">
                     {sponsor.brandName}
                   </span>
                 )}
               </td>
-              <td className="px-spacing-5 py-spacing-5 text-surface-warm-white/70">
+              <td className="px-spacing-5 py-spacing-5 text-[#3f3f3d] dark:text-surface-warm-white/70">
                 {sponsor.support}
               </td>
-              <td className="px-spacing-5 py-spacing-5 text-right font-semibold text-surface-warm-white">
+              <td className="px-spacing-5 py-spacing-5 text-right font-semibold text-[#1c1c1c] dark:text-surface-warm-white">
                 {sponsor.value}
               </td>
             </tr>
@@ -76,7 +142,13 @@ export function SponsorTable({ sponsors }: { sponsors: Sponsor[] }) {
       </table>
 
       {pageCount > 1 ? (
-        <div className="flex flex-col gap-spacing-4 border-t border-surface-warm-white/10 bg-[#151515] px-spacing-5 py-spacing-4 text-sm text-surface-warm-white/52 sm:flex-row sm:items-center sm:justify-between">
+        <div
+          className={
+            flat
+              ? "flex flex-col gap-spacing-4 border-t border-black/15 px-0 py-spacing-4 text-sm text-[#3f3f3d] dark:border-white/[0.07] dark:text-surface-warm-white/52 sm:flex-row sm:items-center sm:justify-between"
+              : "flex flex-col gap-spacing-4 border-t border-black/15 bg-[#eceae4] px-spacing-5 py-spacing-4 text-sm text-[#3f3f3d] dark:border-surface-warm-white/10 dark:bg-[#151515] dark:text-surface-warm-white/52 sm:flex-row sm:items-center sm:justify-between"
+          }
+        >
           <span>
             {start}-{end} dari {sponsors.length} sponsor
           </span>
@@ -85,7 +157,11 @@ export function SponsorTable({ sponsors }: { sponsors: Sponsor[] }) {
               type="button"
               disabled={page === 1}
               onClick={() => setPage((current) => Math.max(1, current - 1))}
-              className="rounded-radius-lg border border-surface-warm-white/12 px-spacing-4 py-spacing-2 text-surface-warm-white transition hover:bg-surface-warm-white/8 disabled:cursor-not-allowed disabled:opacity-40"
+              className={
+                flat
+                  ? "rounded-md border border-black/20 px-spacing-4 py-spacing-2 font-medium text-[#1c1c1c] transition hover:bg-black/[0.06] disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/14 dark:text-surface-warm-white dark:hover:bg-white/[0.06]"
+                  : "rounded-radius-lg border border-black/20 px-spacing-4 py-spacing-2 font-medium text-[#1c1c1c] transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:border-surface-warm-white/12 dark:text-surface-warm-white dark:hover:bg-surface-warm-white/8"
+              }
             >
               Sebelumnya
             </button>
@@ -95,7 +171,11 @@ export function SponsorTable({ sponsors }: { sponsors: Sponsor[] }) {
               onClick={() =>
                 setPage((current) => Math.min(pageCount, current + 1))
               }
-              className="rounded-radius-lg border border-surface-warm-white/12 px-spacing-4 py-spacing-2 text-surface-warm-white transition hover:bg-surface-warm-white/8 disabled:cursor-not-allowed disabled:opacity-40"
+              className={
+                flat
+                  ? "rounded-md border border-black/20 px-spacing-4 py-spacing-2 font-medium text-[#1c1c1c] transition hover:bg-black/[0.06] disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/14 dark:text-surface-warm-white dark:hover:bg-white/[0.06]"
+                  : "rounded-radius-lg border border-black/20 px-spacing-4 py-spacing-2 font-medium text-[#1c1c1c] transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:border-surface-warm-white/12 dark:text-surface-warm-white dark:hover:bg-surface-warm-white/8"
+              }
             >
               Berikutnya
             </button>

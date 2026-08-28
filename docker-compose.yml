@@ -1,16 +1,19 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: docker.io/postgres:16-alpine
     container_name: umkmcepat-postgres
     restart: unless-stopped
+    dns: ["1.1.1.1", "8.8.8.8"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: umkmcepat
+      TZ: UTC
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./prisma/init-umami.sql:/docker-entrypoint-initdb.d/10-create-umami-db.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d umkmcepat"]
       interval: 10s
@@ -18,11 +21,12 @@ services:
       retries: 5
 
   9router:
-    image: decolua/9router:latest
+    image: docker.io/decolua/9router:latest
     container_name: umkmcepat-9router
     restart: unless-stopped
-    profiles:
-      - ai
+    # Public DNS: rootless podman aardvark-dns can't forward to the host's
+    # systemd-resolved (127.0.0.53); pin resolvers reachable by IP.
+    dns: ["1.1.1.1", "8.8.8.8"]
     depends_on:
       - headroom
     environment:
@@ -31,7 +35,7 @@ services:
       HOSTNAME: 0.0.0.0
       NEXT_PUBLIC_BASE_URL: http://localhost:20129
     ports:
-      - "20129:20128"
+      - "127.0.0.1:20129:20128"
     volumes:
       - nine_router_data:/app/data
 
@@ -41,25 +45,39 @@ services:
       dockerfile: Dockerfile.headroom
     container_name: umkmcepat-headroom
     restart: unless-stopped
-    profiles:
-      - ai
+    dns: ["1.1.1.1", "8.8.8.8"]
     environment:
       HEADROOM_TELEMETRY: off
     ports:
-      - "8787:8787"
+      - "127.0.0.1:8787:8787"
 
   redis:
-    image: redis:7-alpine
+    image: docker.io/redis:7-alpine
     container_name: umkmcepat-redis
     restart: unless-stopped
-    profiles:
-      - redis
+    dns: ["1.1.1.1", "8.8.8.8"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
+
+  minio:
+    image: docker.io/minio/minio:latest
+    container_name: umkmcepat-minio
+    restart: unless-stopped
+    dns: ["1.1.1.1", "8.8.8.8"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-umkmcepat}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-umkmcepat}
+    command: server /data --console-address ":9001"
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio_data:/data
 
 volumes:
   postgres_data:
   nine_router_data:
   redis_data:
+  minio_data:

@@ -1,0 +1,46 @@
+import { tanstackStart } from "@tanstack/react-start/plugin/vite";
+import tailwindcss from "@tailwindcss/vite";
+import { nitro } from "nitro/vite";
+import viteReact from "@vitejs/plugin-react";
+import { defineConfig, type Plugin } from "vite";
+
+// Bypass Vite transform for preview/published asset APIs
+function bypassViteTransformForProjectApis(): Plugin {
+  return {
+    name: "bypass-vite-transform-project-apis",
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        const url = req.url ?? "";
+        if (url.startsWith("/api/") || url.startsWith("/p/")) {
+          req.headers["sec-fetch-dest"] = "document";
+        }
+        next();
+      });
+    },
+  };
+}
+
+export default defineConfig({
+  envPrefix: ["VITE_", "NEXT_PUBLIC_"],
+  css: {
+    postcss: {},
+  },
+  resolve: {
+    alias: {
+      "@": new URL("./src", import.meta.url).pathname,
+    },
+  },
+  server: {
+    allowedHosts: ["dev.umkmcepat.com", "localhost", "127.0.0.1"],
+    watch: {
+      ignored: ["**/.data/**", "**/.output/**", "**/node_modules/**"],
+    },
+  },
+  plugins: [
+    bypassViteTransformForProjectApis(),
+    tailwindcss(),
+    tanstackStart(),
+    nitro({ preset: "bun" }),
+    viteReact(),
+  ],
+});

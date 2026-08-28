@@ -1,5 +1,7 @@
 import { type UIMessage } from "ai";
 
+import type { SoftFieldId } from "@/lib/projects/brief-rich-fields";
+
 const MAX_STORED_MESSAGES = 200;
 export const MAX_CONTEXT_MESSAGES = 10;
 export const CHAT_PAGE_SIZE = 20;
@@ -29,7 +31,10 @@ export function parseProjectChatMessages(value: unknown): UIMessage[] {
     return [];
   }
 
-  return value.filter(isUiMessage).slice(-MAX_STORED_MESSAGES);
+  return value
+    .map(sanitizeStoredUiMessage)
+    .filter(isUiMessage)
+    .slice(-MAX_STORED_MESSAGES);
 }
 
 export function getProjectChatContext(messages: UIMessage[]) {
@@ -66,15 +71,18 @@ export function parseProjectMemoryFacts(value: unknown): ProjectMemoryFacts {
 }
 
 export function buildProjectChatContext({
+  fieldState,
   memoryFacts,
   messages,
   summary,
 }: {
+  fieldState?: FieldStateMap;
   memoryFacts: ProjectMemoryFacts;
   messages: UIMessage[];
   summary: ProjectChatSummary;
 }): ProjectChatContext {
   const recentMessages = getProjectChatContext(messages);
+  const fieldStateBlock = buildFieldStateBlock(fieldState ?? {});
   const systemContext = [
     summary.text
       ? `Hidden previous chat summary:\n${summary.text}`
@@ -88,6 +96,7 @@ export function buildProjectChatContext({
     memoryFacts.preferences.length
       ? `User preferences:\n${formatBullets(memoryFacts.preferences)}`
       : "User preferences: none.",
+    fieldStateBlock ? `Field state:\n${fieldStateBlock}` : "Field state: none.",
     "Use this hidden context to keep the conversation coherent. Do not mention internal summaries/facts to the user unless naturally relevant.",
   ].join("\n\n");
 
@@ -137,6 +146,83 @@ export function getTextFromUIMessage(message: UIMessage) {
     .join("\n");
 }
 
+export function dedupeUiMessages(messages: UIMessage[]): UIMessage[] {
+  const seen = new Set<string>();
+  const deduped = messages.filter((message) => {
+    const text = getTextFromUIMessage(message);
+    const key = message.id || `${message.role}:${text}`;
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+
+  return normalizeModelMessages(deduped);
+}
+
+function normalizeModelMessages(messages: UIMessage[]): UIMessage[] {
+  if (messages.length === 0) {
+    return [];
+  }
+
+  const normalized: UIMessage[] = [messages[0]!];
+
+  for (let i = 1; i < messages.length; i++) {
+    const current = messages[i]!;
+    const previous = normalized[normalized.length - 1]!;
+
+    if (current.role === previous.role) {
+      // Merge consecutive same-role messages into the previous one
+      previous.parts = [...previous.parts, ...current.parts];
+      // Discard empty text parts created during merge
+      previous.parts = previous.parts.filter(
+        (p) => p.type !== "text" || (p.type === "text" && p.text.trim()),
+      );
+    } else {
+      normalized.push({ ...current, parts: [...current.parts] });
+    }
+  }
+
+  return normalized;
+}
+
+function sanitizeStoredUiMessage(value: unknown): unknown {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const message = value as Partial<UIMessage>;
+
+  if (!Array.isArray(message.parts)) {
+    return value;
+  }
+
+  const parts = message.parts.filter((part) => {
+    if (message.role === "assistant") {
+      const state = (part as { state?: unknown }).state;
+
+      if (part.type === "reasoning" || part.type === "step-start") {
+        return false;
+      }
+
+      if (part.type === "text") {
+        return !state || state === "done";
+      }
+
+      if (part.type.startsWith("tool-")) {
+        return state === "output-available";
+      }
+    }
+
+    return true;
+  });
+
+  return { ...message, parts };
+}
+
 function isUiMessage(value: unknown): value is UIMessage {
   if (!value || typeof value !== "object") {
     return false;
@@ -148,7 +234,8 @@ function isUiMessage(value: unknown): value is UIMessage {
     (message.role === "user" ||
       message.role === "assistant" ||
       message.role === "system") &&
-    Array.isArray(message.parts)
+    Array.isArray(message.parts) &&
+    message.parts.length > 0
   );
 }
 
@@ -176,4 +263,91 @@ function stringArrayValue(value: unknown, maxItems: number) {
 
 function formatBullets(items: string[]) {
   return items.map((item) => `- ${item}`).join("\n");
+}
+
+export type FieldState = "asked" | "answered" | "declined" | "explicitly_empty";
+
+export type FieldStateMap = Partial<Record<SoftFieldId, FieldState>>;
+
+export function recordFieldAsk(
+  map: FieldStateMap,
+  field: SoftFieldId,
+): FieldStateMap {
+  const current = map[field];
+  if (
+    current === "answered" ||
+    current === "declined" ||
+    current === "explicitly_empty"
+  ) {
+    return map;
+  }
+  return { ...map, [field]: "asked" };
+}
+
+export function recordFieldAnswer(
+  map: FieldStateMap,
+  field: SoftFieldId,
+): FieldStateMap {
+  return { ...map, [field]: "answered" };
+}
+
+export function recordFieldDecline(
+  map: FieldStateMap,
+  field: SoftFieldId,
+): FieldStateMap {
+  const current = map[field];
+  if (current === "answered") {
+    return map;
+  }
+  return { ...map, [field]: "declined" };
+}
+
+export function recordFieldEmpty(
+  map: FieldStateMap,
+  field: SoftFieldId,
+): FieldStateMap {
+  const current = map[field];
+  if (current === "answered") {
+    return map;
+  }
+  return { ...map, [field]: "explicitly_empty" };
+}
+
+export function summarizeFieldState(map: FieldStateMap) {
+  const answered: SoftFieldId[] = [];
+  const declined: SoftFieldId[] = [];
+  const empty: SoftFieldId[] = [];
+  const asked: SoftFieldId[] = [];
+  for (const [field, state] of Object.entries(map) as Array<
+    [SoftFieldId, FieldState]
+  >) {
+    if (state === "answered") {
+      answered.push(field);
+    } else if (state === "declined") {
+      declined.push(field);
+    } else if (state === "explicitly_empty") {
+      empty.push(field);
+    } else {
+      asked.push(field);
+    }
+  }
+  return { answered, declined, empty, asked };
+}
+
+export function buildFieldStateBlock(map: FieldStateMap): string {
+  const summary = summarizeFieldState(map);
+  const lines: string[] = [];
+  for (const field of summary.answered) {
+    lines.push(`${field}: answered`);
+  }
+  for (const field of summary.declined) {
+    lines.push(`${field}: declined`);
+  }
+  for (const field of summary.empty) {
+    lines.push(`${field}: explicitly_empty`);
+  }
+  for (const field of summary.asked) {
+    lines.push(`${field}: asked`);
+  }
+  return lines.join("\n");
 }

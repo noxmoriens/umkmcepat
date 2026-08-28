@@ -70,45 +70,362 @@ model Session {
 }
 
 model User {
-  id            String        @id @default(cuid())
-  name          String?       @db.VarChar(100)
-  email         String?       @unique @db.VarChar(100)
-  emailVerified DateTime?
-  image         String?       @db.Text
-  accounts      Account[]
-  sessions      Session[]
-  landingPages  LandingPage[]
-  projects      Project[]
+  id              String                  @id @default(cuid())
+  name            String?                 @db.VarChar(100)
+  email           String?                 @unique @db.VarChar(100)
+  emailVerified   DateTime?
+  image           String?                 @db.Text
+  bannedAt        DateTime?
+  createdAt       DateTime @default(now())
+  accounts        Account[]
+  sessions        Session[]
+  refreshTokens   RefreshToken[]
+  idempotencyKeys ProjectIdempotencyKey[]
+  landingPages    LandingPage[]
+  projects        Project[]
+  editAttempts    ProjectEditAttempt[]
+  assets          ProjectAsset[]
+  waitlistEntries WaitlistEntry[]
+  credits         UserCredit[]
+  payments        Payment[]
+  supportTickets  SupportTicket[]
+  supportAssets   SupportAsset[]
+  buildHandoffs   ProjectBuildHandoff[]
 
   @@index([email])
   @@index([name])
+  @@index([createdAt])
 }
 
 model Project {
-  id                        String    @id @default(cuid())
-  title                     String    @db.VarChar(120)
-  prompt                    String    @db.Text
-  model                     String    @db.VarChar(160)
-  status                    String    @default("draft") @db.VarChar(32)
+  id                        String                  @id @default(cuid())
+  title                     String                  @db.VarChar(120)
+  prompt                    String                  @db.Text
+  model                     String                  @db.VarChar(160)
+  status                    String                  @default("draft") @db.VarChar(32)
   siteSchema                Json?
   chatMessages              Json?
   chatSummary               Json?
   memoryFacts               Json?
-  lastCompactedMessageCount Int       @default(0)
+  lastCompactedMessageCount Int                     @default(0)
   brief                     Json?
   workspaceCard             Json?
+  visualAnnotations         Json?
   sourceFiles               Json?
   distFiles                 Json?
-  buildStatus               String    @default("not_started") @db.VarChar(32)
-  buildLog                  String?   @db.Text
+  buildStatus               String                  @default("not_started") @db.VarChar(32)
+  buildLog                  String?                 @db.Text
   builtAt                   DateTime?
+  thumbnailRef              String?                 @db.Text
+  thumbnailBuildId          String?
+  thumbnailUpdatedAt        DateTime?
+  activeOperationToken      String?                 @db.VarChar(64)
+  activeOperationKind       String?                 @db.VarChar(32)
+  activeOperationExpiresAt  DateTime?
   userId                    String
-  user                      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt                 DateTime  @default(now())
-  updatedAt                 DateTime  @updatedAt
+  user                      User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  snapshots                 ProjectSnapshot[]
+  builds                    ProjectBuild[]
+  deployments               ProjectDeployment[]
+  idempotencyKeys           ProjectIdempotencyKey[]
+  runtimeEvents             RuntimeEvent[]
+  editAttempts              ProjectEditAttempt[]
+  assets                    ProjectAsset[]
+  chatTurns                 ProjectChatTurn[]
+  userCredits               UserCredit[]
+  generationEngine          String                  @default("contract") @db.VarChar(32)
+  activeHandoffId           String?                 @unique
+  activeHandoff             ProjectBuildHandoff?    @relation("ProjectActiveHandoff", fields: [activeHandoffId], references: [id], onDelete: SetNull)
+  buildHandoffs             ProjectBuildHandoff[]   @relation("ProjectBuildHandoffs")
+  createdAt                 DateTime                @default(now())
+  updatedAt                 DateTime                @updatedAt
 
   @@index([userId])
   @@index([updatedAt])
+  @@index([activeOperationExpiresAt])
+  @@index([userId, updatedAt, id])
+}
+
+model ProjectBuildHandoff {
+  id               String    @id @default(cuid())
+  projectId        String
+  project          Project   @relation("ProjectBuildHandoffs", fields: [projectId], references: [id], onDelete: Cascade)
+  activeForProject Project?  @relation("ProjectActiveHandoff")
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  engine           String    @db.VarChar(32)
+  status           String    @default("draft") @db.VarChar(32)
+  briefSnapshot    Json?
+  briefHash        String?   @db.VarChar(64)
+  briefRevision    Int?
+  contract         Json
+  plan             Json
+  contractHash     String    @db.VarChar(64)
+  planHash         String    @db.VarChar(64)
+  reviewItems      Json
+  reviewHash       String    @db.VarChar(64)
+  contractRevision Int
+  planRevision     Int
+  // Frozen expert direction written from the discussion at handoff time. Taste
+  // only — the contract stays the sole source of customer-facing facts.
+  creativeDirection     String? @db.Text
+  creativeDirectionHash String? @db.VarChar(64)
+  acceptedAt       DateTime?
+  supersededAt     DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  attempts ProjectEditAttempt[]
+
+  @@unique([projectId, contractRevision, planRevision])
+  @@index([projectId, status, createdAt])
+  @@index([userId])
+}
+
+model ProjectChatTurn {
+  id            String                @id @db.VarChar(64)
+  projectId     String
+  userMessageId String                @db.VarChar(64)
+  status        ProjectChatTurnStatus
+  startedAt     DateTime              @default(now())
+  finishedAt    DateTime?
+  expiresAt     DateTime
+  errorMessage  String?
+  project       Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, status])
+  @@index([expiresAt])
+}
+
+enum ProjectChatTurnStatus {
+  running
+  succeeded
+  failed
+  cancelled
+}
+
+model ProjectIdempotencyKey {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  action    String   @db.VarChar(64)
+  key       String   @db.VarChar(160)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, action, key])
+  @@index([projectId])
+  @@index([createdAt])
+}
+
+/// Owner-scoped uploaded asset (business image / reference / logo) stored under
+/// .data/project-assets. The `ref` encodes the on-disk path; cleanup deletes
+/// the stored object best-effort alongside the DB row on project delete.
+model ProjectAsset {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ref         String   @db.Text
+  purpose     String   @db.VarChar(32)
+  contentType String   @db.VarChar(64)
+  sizeBytes   Int
+  publicUrl   String?  @db.Text
+  createdAt   DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([userId])
+}
+
+model ProjectEditAttempt {
+  id               String              @id @default(cuid())
+  projectId        String
+  project          Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId           String
+  user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  handoffId        String?
+  handoff          ProjectBuildHandoff? @relation(fields: [handoffId], references: [id], onDelete: SetNull)
+  parentSnapshotId String?
+  snapshotId       String?
+  buildId          String?
+  kind             String              @db.VarChar(32)
+  status           String              @default("received") @db.VarChar(32)
+  instruction      String              @db.Text
+  summary          String?             @db.Text
+  annotations      Json?
+  validationIssues Json?
+  advisoryIssues   Json?
+  errorMessage     String?             @db.Text
+  leaseToken       String?             @db.VarChar(64)
+  startedAt        DateTime?
+  finishedAt       DateTime?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  @@index([projectId, createdAt])
+  @@index([userId])
+  @@index([status])
+  @@index([leaseToken])
+}
+
+model ProjectSnapshot {
+  id               String              @id @default(cuid())
+  projectId        String
+  project          Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parentSnapshotId String?
+  parentSnapshot   ProjectSnapshot?    @relation("ProjectSnapshotParent", fields: [parentSnapshotId], references: [id], onDelete: SetNull)
+  childSnapshots   ProjectSnapshot[]   @relation("ProjectSnapshotParent")
+  sourceType       String              @default("generated") @db.VarChar(32)
+  sourceRef        String?             @db.Text
+  files            Json?
+  metadata         Json?
+  builds           ProjectBuild[]
+  deployments      ProjectDeployment[]
+  createdAt        DateTime            @default(now())
+
+  @@index([projectId])
+  @@index([parentSnapshotId])
+  @@index([createdAt])
+  @@index([projectId, createdAt])
+}
+
+model ProjectBuild {
+  id            String              @id @default(cuid())
+  projectId     String
+  project       Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  snapshotId    String
+  snapshot      ProjectSnapshot     @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  status        String              @db.VarChar(32)
+  logRef        String?             @db.Text
+  logText       String?             @db.Text
+  artifactRef   String?             @db.Text
+  imageRef      String?             @db.Text
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  deployments   ProjectDeployment[]
+  runtimeEvents RuntimeEvent[]
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@index([projectId])
+  @@index([snapshotId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([projectId, createdAt])
+  @@index([projectId, status, updatedAt])
+}
+
+model ProjectDeployment {
+  id            String           @id @default(cuid())
+  projectId     String
+  project       Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  buildId       String?
+  build         ProjectBuild?    @relation(fields: [buildId], references: [id], onDelete: SetNull)
+  snapshotId    String?
+  snapshot      ProjectSnapshot? @relation(fields: [snapshotId], references: [id], onDelete: SetNull)
+  kind          String           @db.VarChar(32)
+  status        String           @db.VarChar(32)
+  runtimeNodeId String?
+  runtimeNode   RuntimeNode?     @relation(fields: [runtimeNodeId], references: [id], onDelete: SetNull)
+  containerName String?          @db.VarChar(160)
+  internalUrl   String?          @db.Text
+  publicPath    String?          @db.VarChar(255)
+  publicUrl     String?          @db.Text
+  slug          String?          @db.VarChar(160)
+  lastRequestAt DateTime?
+  startedAt     DateTime?
+  stoppedAt     DateTime?
+  runtimeEvents RuntimeEvent[]
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@index([projectId])
+  @@index([buildId])
+  @@index([runtimeNodeId])
+  @@index([status])
+  @@index([kind])
+  @@index([projectId, kind, createdAt])
+  @@index([projectId, kind, updatedAt])
+  @@index([slug])
+}
+
+model RuntimeNode {
+  id              String              @id @default(cuid())
+  name            String              @unique @db.VarChar(120)
+  provider        String              @db.VarChar(64)
+  internalUrl     String?             @db.Text
+  status          String              @db.VarChar(32)
+  maxContainers   Int
+  memoryMb        Int?
+  cpuCores        Float?
+  lastHeartbeatAt DateTime?
+  deployments     ProjectDeployment[]
+  runtimeEvents   RuntimeEvent[]
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([status])
+}
+
+model RuntimeEvent {
+  id            String             @id @default(cuid())
+  projectId     String?
+  project       Project?           @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  deploymentId  String?
+  deployment    ProjectDeployment? @relation(fields: [deploymentId], references: [id], onDelete: SetNull)
+  buildId       String?
+  build         ProjectBuild?      @relation(fields: [buildId], references: [id], onDelete: SetNull)
+  runtimeNodeId String?
+  runtimeNode   RuntimeNode?       @relation(fields: [runtimeNodeId], references: [id], onDelete: SetNull)
+  type          String             @db.VarChar(96)
+  message       String?            @db.Text
+  metadata      Json?
+  createdAt     DateTime           @default(now())
+
+  @@index([projectId])
+  @@index([deploymentId])
+  @@index([buildId])
+  @@index([runtimeNodeId])
+  @@index([type])
+  @@index([createdAt])
+  @@index([projectId, createdAt])
+}
+
+model UserCredit {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId    String?
+  project      Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  amount          Int
+  inputTokens     Int      @default(0)
+  outputTokens    Int      @default(0)
+  rawModelId      String?  @db.VarChar(160)
+  pricedModelId   String?  @db.VarChar(160)
+  pricingSource   String?  @db.VarChar(32)
+  promptPrice     Decimal? @db.Decimal(20, 12)
+  completionPrice Decimal? @db.Decimal(20, 12)
+  reason          String   @db.VarChar(64)
+  expiresAt       DateTime
+  createdAt       DateTime @default(now())
+
+  @@index([userId, expiresAt])
+  @@index([userId, expiresAt, createdAt])
+  @@index([projectId, createdAt])
+  @@index([expiresAt])
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique @db.VarChar(128)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model VerificationToken {
@@ -118,4 +435,169 @@ model VerificationToken {
 
   @@unique([identifier, token])
   @@index([expires])
+}
+
+model Payment {
+  id                    String   @id @default(cuid())
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orderId               String   @unique
+  amount                Int // Rupiah (cth: 2900)
+  energyGranted         Int // Jumlah energi (cth: 50000)
+  status                String   @default("PENDING") // PENDING, COMPLETED, FAILED
+  paymentMethod         String? // qris, va, cimb_niaga_va, dll
+  paymentNumber         String? // legacy: Pakasir QRIS payload / Nomor VA only
+  providerTxnId         String?  @unique // Mayar transactionId — webhook correlation key
+  providerPaymentLinkId String? // Mayar payment-request id — reconciliation fallback
+  paymentUrl            String? // Mayar hosted QRIS checkout link
+  type                  String   @default("ENERGY_BOOSTER")
+  metadata              Json?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
+/// Pre-auth pilot waitlist entry. Admin approval gates product access; a
+/// signed-up user whose email matches an approved entry is let through, others
+/// are redirected to /waitlist. The image (optional) uses the project-asset
+/// upload primitive; story is required for approval confidence.
+model WaitlistEntry {
+  id              String    @id @default(cuid())
+  email           String    @unique @db.VarChar(160)
+  phone           String?   @db.VarChar(40)
+  businessName    String    @db.VarChar(160)
+  businessType    String?   @db.VarChar(120)
+  story           String    @db.Text
+  imageRef        String?   @db.Text
+  status          String    @default("pending") @db.VarChar(24)
+  submittedAt     DateTime  @default(now())
+  reviewedAt      DateTime?
+  reviewerId      String?   @db.VarChar(160)
+  rejectionReason String?   @db.Text
+  linkedUserId    String?   @db.VarChar(160)
+  user            User?     @relation(fields: [linkedUserId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([linkedUserId])
+}
+
+/// Runtime-overridable non-secret config. DB row wins; read layer falls back
+/// to process.env then hardcoded default. Secrets NEVER live here.
+model AppSetting {
+  key       String   @id @db.VarChar(160)
+  category  String   @db.VarChar(32)
+  value     Json
+  updatedAt DateTime @updatedAt
+  updatedBy String?  @db.VarChar(160)
+
+  @@index([category])
+}
+
+/// One row per upstream AI request, metadata only (ids, enums, counts,
+/// durations — never prompts/file contents). Answers "what happened and
+/// when"; UserCredit answers "what did it cost". Query by turnId/attemptId/
+/// projectId for the full call chain of an operation.
+model AiCallRecord {
+  id             String   @id @default(cuid())
+  createdAt      DateTime @default(now())
+
+  // Correlation — at least one is set.
+  projectId      String?
+  attemptId      String? // ProjectEditAttempt.id when applicable
+  turnId         String? // ProjectChatTurn.id when applicable
+  buildId        String? // ProjectBuild.id when applicable
+
+  // What kind of call
+  task           String   @db.VarChar(32) // moderation|discuss|compaction|build-spec|build-step|edit|edit-repair|build-repair
+  phase          String?  @db.VarChar(32) // engine-specific: writer|repair|fallback|hedge|spec ...
+  stepIndex      Int? // agent step ordinal when applicable
+
+  // Models
+  modelRequested String   @db.VarChar(160) // combo label requested
+  modelServed    String?  @db.VarChar(160) // actual model from response.modelId
+
+  // Latency (ms)
+  requestMs      Int?
+  ttftMs         Int?
+
+  // Tokens
+  inputTokens    Int?
+  outputTokens   Int?
+  cachedTokens   Int?
+
+  // Outcome
+  status         String   @db.VarChar(16) // ok|error|aborted|timeout
+  errorClass     String?  @db.VarChar(64) // schema-422|transport|rate-limit|parse|... coarse only
+  retryCount     Int      @default(0)
+
+  // Hedge metadata (discuss only)
+  hedged         Boolean  @default(false)
+  raceRole       String?  @db.VarChar(16) // winner|aborted — only when hedged
+
+  @@index([projectId, createdAt])
+  @@index([attemptId])
+  @@index([turnId])
+  @@index([task, createdAt])
+}
+
+enum SupportCategory {
+  TEKNIS
+  PEMBAYARAN
+  UMUM
+}
+
+enum SupportTicketStatus {
+  OPEN
+  RESOLVED
+}
+
+model SupportTicket {
+  id         String              @id @default(cuid())
+  userId     String
+  subject    String              @db.VarChar(140)
+  category   SupportCategory
+  status     SupportTicketStatus @default(OPEN)
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+  resolvedAt DateTime?
+  resolvedBy String?
+  user       User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages   SupportMessage[]
+  assets     SupportAsset[]
+
+  @@index([status, updatedAt])
+  @@index([userId, updatedAt])
+}
+
+model SupportMessage {
+  id         String        @id @default(cuid())
+  ticketId   String
+  authorId   String
+  authorRole String        @db.VarChar(16) // 'user' | 'admin'
+  body       String        @db.Text
+  readAt     DateTime?
+  createdAt  DateTime      @default(now())
+  ticket     SupportTicket  @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  assetIds   String[]
+  assets     SupportAsset[]
+
+  @@index([ticketId, createdAt])
+  @@index([ticketId, readAt])
+}
+
+model SupportAsset {
+  id           String         @id @default(cuid())
+  assetId      String         @unique
+  uploadedById String
+  uploadedBy   User           @relation(fields: [uploadedById], references: [id], onDelete: Cascade)
+  ticketId     String?
+  ticket       SupportTicket?  @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  messageId    String?
+  message      SupportMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  createdAt    DateTime       @default(now())
+
+  @@index([uploadedById, ticketId])
+  @@index([messageId])
 }

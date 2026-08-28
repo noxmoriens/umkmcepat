@@ -1,23 +1,45 @@
 {
   "$schema": "https://unpkg.com/knip@latest/schema.json",
   "entry": [
-    "src/app/**/{page,layout,route,loading,error,global-error,not-found}.{ts,tsx}",
-    "src/**/*.test.ts",
+    "src/routes/**/*.{ts,tsx}",
+    "src/**/*.{test,itest}.{ts,tsx}",
+    "tests/**/*.{test,itest}.{ts,tsx}",
     ".husky/pre-commit",
     ".husky/commit-msg",
-    "lighthouserc.mobile.cjs",
-    "lighthouserc.desktop.cjs",
-    "lighthouserc.auth.mobile.cjs",
-    "lighthouserc.auth.desktop.cjs"
+    "scripts/capture-project-thumbnail.ts"
   ],
-  "project": ["src/**/*.{ts,tsx}", "*.{ts,js,mjs,cjs}"],
+  "project": [
+    "src/**/*.{ts,tsx}",
+    "!src/lib/projects/scaffold/shadcn-registry/**"
+  ],
+  "ignore": ["src/lib/projects/scaffold/shadcn-registry/**"],
   "ignoreBinaries": ["graphify", "netstat"],
-  "ignoreDependencies": ["@lhci/cli", "eslint-config-next", "tailwindcss"],
+  "ignoreDependencies": ["tailwindcss"],
   "ignoreExportsUsedInFile": true,
   "ignoreIssues": {
     "src/components/ui/**": ["exports"],
-    "src/lib/provider-registry.ts": ["exports"],
-    "src/lib/storage/index.ts": ["exports"],
-    "src/lib/zod-schemas.ts": ["exports", "types"]
+    "src/lib/ai/provider-registry.ts": ["exports"],
+    "src/lib/config/app-settings-registry.ts": ["exports"],
+    "src/lib/zod-schemas.ts": ["exports", "types"],
+    "src/components/admin/streamer-mode/streamer-mode-context.tsx": [
+      "exports",
+      "files"
+    ],
+    "src/components/admin/streamer-mode/SensitiveText.tsx": [
+      "exports",
+      "files"
+    ],
+    "src/lib/projects/browser-gates.ts": ["exports"],
+    "src/lib/projects/generated-site-recipes.ts": ["exports"],
+    "src/lib/projects/outcome-visual-review.ts": ["exports"],
+    "src/lib/projects/professional-site-kits.ts": ["exports", "types"],
+    "src/lib/storage/uploads/temp-image-client.ts": ["exports"],
+    "src/lib/storage/uploads/temp-image-storage.ts": ["exports"],
+    "src/lib/projects/generated-site-contract.ts": ["exports"],
+    "src/lib/projects/professional-site-blueprint.ts": ["exports"],
+    "src/lib/projects/brief-admission.ts": ["exports"],
+    "src/components/projects/workspace/WorkspaceShell.tsx": ["exports"],
+    "src/lib/projects/canonical-brief.ts": ["exports"],
+    "src/lib/projects/runtime-idle-runner.ts": ["files"]
   }
 }

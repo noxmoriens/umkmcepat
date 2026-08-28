@@ -1,6 +1,51 @@
+import type {
+  CertificationValue,
+  ContactValue,
+  HoursValue,
+  PaymentMethodValue,
+  ProductOrServiceItem,
+  SocialLinkValue,
+  TestimonialValue,
+} from "@/lib/projects/brief-rich-fields";
+import type { UmkmType, CleanedBrief } from "@/lib/projects/brief-rich-fields";
+import type { FieldStateMap } from "@/lib/projects/chat-memory";
+
+import { validateBrief } from "@/lib/projects/brief-rich-fields";
+import {
+  getPrimaryActionLabel,
+  getPrimaryOfferName,
+  parseCanonicalBrief,
+  type ProjectBriefV2,
+} from "@/lib/projects/canonical-brief";
+import {
+  normalizeVisitorJobs,
+  parseVisitorJobs,
+  type VisitorJob,
+} from "@/lib/projects/visitor-jobs";
+
+export type ProjectFact = {
+  key: string;
+  label: string;
+  value: string;
+};
+
+export type ProjectDecision = {
+  answer: string;
+  id: string;
+  question: string;
+};
+
+export type BusinessImageRef = {
+  id: string;
+  purpose: ImageUploadPurpose;
+};
+
 export type ProjectBrief = {
   version: 1;
   prompt: string;
+  facts?: ProjectFact[];
+  decisions?: ProjectDecision[];
+  visitorJobs?: VisitorJob[];
   businessName: string;
   businessType: string;
   offer: string;
@@ -8,30 +53,89 @@ export type ProjectBrief = {
   contactOrCta: string;
   stylePreference: string;
   notes: string[];
+  confidence?: number;
+  openQuestions?: string[];
+  productOrService: ProductOrServiceItem[] | null;
+  contact: ContactValue | null;
+  tagline: string | null;
+  usp: string[] | null;
+  priceRange: string | null;
+  visuals: boolean | null;
+  hours: HoursValue[] | null;
+  address: string | null;
+  deliveryArea: string | null;
+  since: string | null;
+  testimonials: TestimonialValue[] | null;
+  certifications: CertificationValue[] | null;
+  paymentMethods: PaymentMethodValue[] | null;
+  socialLinks: SocialLinkValue[] | null;
+  currentPromo: string | null;
+  secondaryCta: { label: string; action: string } | null;
+  readyForBuild: boolean;
+  umkmType?: UmkmType | null;
+  fieldState?: FieldStateMap;
+  businessImages?: BusinessImageRef[];
 };
 
 export type BriefQuestion = {
-  id: keyof Pick<
-    ProjectBrief,
-    | "businessType"
-    | "offer"
-    | "targetCustomer"
-    | "contactOrCta"
-    | "stylePreference"
-  >;
+  // Free-form slug the AI chooses per question (e.g. "opening_hours",
+  id: string;
   question: string;
   recommendedOptionLabel?: string;
+  answerMode?: "choice" | "text";
+  selectionMode?: "single" | "multiple";
+  placeholder?: string;
   whyThisQuestionMatters?: string;
+  // ponytail: when true, user must answer before advancing. AI marks mandatory
+  required?: boolean;
   options: Array<{ label: string; description: string }>;
 };
 
-// One question per turn (relentless interview style). The card never batches
-// questions: the AI asks a single decision, the user answers, then the next
-// turn asks the next one.
+// One question per turn. The AI asks a single question, the user answers, the
+export type ImageUploadPurpose = "business-image" | "logo" | "reference";
+
+export type ImageUploadQuestion = {
+  id: string;
+  question: string;
+  hint?: string;
+  selectionMode: "single" | "multiple";
+  purpose: ImageUploadPurpose;
+  required?: boolean;
+};
+
+export type ImageUploadCard = {
+  type: "image_upload";
+  imageUpload: ImageUploadQuestion;
+};
+
+export type BuildRetryCard = {
+  type: "build_retry";
+  title: string;
+  summary: string[];
+  errorMessage?: string;
+};
+
 export type WorkspaceCard =
   | { type: "none" }
   | { type: "question"; question: BriefQuestion }
-  | { type: "build_recommendation"; title: string; summary: string[] };
+  | { type: "image_upload"; imageUpload: ImageUploadQuestion }
+  | ContractBuildRecommendationCard
+  | BuildRetryCard;
+
+export type ContractBuildRecommendationCard = {
+  type: "build_recommendation";
+  engine?: "contract";
+  title: string;
+  summary: string[];
+  handoffId?: string;
+  reviewHash?: string;
+  reviewItems?: Array<{
+    id: string;
+    kind: string;
+    label: string;
+    value: string;
+  }>;
+};
 
 export type ProjectBriefPatch = Partial<
   Pick<
@@ -42,23 +146,52 @@ export type ProjectBriefPatch = Partial<
     | "targetCustomer"
     | "contactOrCta"
     | "stylePreference"
+    | "productOrService"
+    | "contact"
+    | "tagline"
+    | "usp"
+    | "priceRange"
+    | "visuals"
+    | "hours"
+    | "address"
+    | "deliveryArea"
+    | "since"
+    | "testimonials"
+    | "certifications"
+    | "paymentMethods"
+    | "socialLinks"
+    | "currentPromo"
+    | "secondaryCta"
+    | "businessImages"
+    | "visitorJobs"
   >
-> & { notes?: string[] };
+> & {
+  confidence?: number;
+  decisions?: ProjectDecision[];
+  facts?: ProjectFact[];
+  notes?: string[];
+  openQuestions?: string[];
+  umkmType?: UmkmType | null;
+  fieldState?: FieldStateMap;
+};
 
-export const REQUIRED_BRIEF_FIELDS = [
+const LEGACY_BRIEF_PATCH_FIELDS = [
   "businessType",
   "offer",
   "targetCustomer",
   "contactOrCta",
   "stylePreference",
-] as const satisfies Array<BriefQuestion["id"]>;
+] as const;
 
-const REQUIRED_FIELDS: Array<BriefQuestion["id"]> = [...REQUIRED_BRIEF_FIELDS];
+const REQUIRED_FIELDS = [...LEGACY_BRIEF_PATCH_FIELDS];
 
 export function createInitialBrief(prompt = ""): ProjectBrief {
   return {
     version: 1,
     prompt: prompt.trim(),
+    facts: [],
+    decisions: [],
+    visitorJobs: [],
     businessName: "",
     businessType: "",
     offer: "",
@@ -66,12 +199,40 @@ export function createInitialBrief(prompt = ""): ProjectBrief {
     contactOrCta: "",
     stylePreference: "",
     notes: [],
+    confidence: 0,
+    openQuestions: [],
+    productOrService: null,
+    contact: null,
+    tagline: null,
+    usp: null,
+    priceRange: null,
+    visuals: null,
+    hours: null,
+    address: null,
+    deliveryArea: null,
+    since: null,
+    testimonials: null,
+    certifications: null,
+    paymentMethods: null,
+    socialLinks: null,
+    currentPromo: null,
+    secondaryCta: null,
+    readyForBuild: false,
+    umkmType: null,
+    fieldState: {},
+    businessImages: [],
   };
 }
 
 export function parseProjectBrief(value: unknown, prompt = ""): ProjectBrief {
   if (!value || typeof value !== "object") {
     return createInitialBrief(prompt);
+  }
+
+  if ((value as { version?: unknown }).version === 2) {
+    return projectCanonicalBriefForLegacyConsumers(
+      parseCanonicalBrief(value, prompt),
+    );
   }
 
   const input = value as Partial<ProjectBrief>;
@@ -84,9 +245,106 @@ export function parseProjectBrief(value: unknown, prompt = ""): ProjectBrief {
     targetCustomer: stringValue(input.targetCustomer),
     contactOrCta: stringValue(input.contactOrCta),
     stylePreference: stringValue(input.stylePreference),
+    facts: normalizeFacts(input.facts),
+    decisions: normalizeDecisions(input.decisions),
+    visitorJobs: Array.isArray(input.visitorJobs)
+      ? normalizeVisitorJobs(input.visitorJobs)
+      : [],
     notes: Array.isArray(input.notes)
       ? input.notes.filter(isString).slice(-12)
       : [],
+    confidence: normalizeConfidence(input.confidence),
+    openQuestions: Array.isArray(input.openQuestions)
+      ? input.openQuestions.filter(isString).slice(-12)
+      : [],
+    productOrService: input.productOrService ?? null,
+    contact: input.contact ?? null,
+    tagline: stringValueOrNull(input.tagline),
+    usp: Array.isArray(input.usp)
+      ? input.usp.filter(isString).slice(-12)
+      : null,
+    priceRange: stringValueOrNull(input.priceRange),
+    visuals: typeof input.visuals === "boolean" ? input.visuals : null,
+    hours: Array.isArray(input.hours) ? input.hours : null,
+    address: stringValueOrNull(input.address),
+    deliveryArea: stringValueOrNull(input.deliveryArea),
+    since: stringValueOrNull(input.since),
+    testimonials: Array.isArray(input.testimonials) ? input.testimonials : null,
+    certifications: Array.isArray(input.certifications)
+      ? input.certifications
+      : null,
+    paymentMethods: Array.isArray(input.paymentMethods)
+      ? input.paymentMethods
+      : null,
+    socialLinks: Array.isArray(input.socialLinks) ? input.socialLinks : null,
+    currentPromo: stringValueOrNull(input.currentPromo),
+    secondaryCta:
+      input.secondaryCta && typeof input.secondaryCta === "object"
+        ? input.secondaryCta
+        : null,
+    readyForBuild: input.readyForBuild === true,
+    umkmType:
+      typeof input.umkmType === "string" ? (input.umkmType as UmkmType) : null,
+    fieldState:
+      input.fieldState && typeof input.fieldState === "object"
+        ? (input.fieldState as FieldStateMap)
+        : {},
+    businessImages: normalizeBusinessImages(input.businessImages),
+  };
+}
+
+function projectCanonicalBriefForLegacyConsumers(
+  brief: ProjectBriefV2,
+): ProjectBrief {
+  const primaryOffer = getPrimaryOfferName(brief) ?? "";
+  const primaryActionLabel = getPrimaryActionLabel(brief) ?? "";
+  const contact =
+    brief.primaryAction?.kind !== "browse" && brief.primaryAction?.target
+      ? {
+          channel: brief.primaryAction.kind,
+          label: brief.primaryAction.label,
+          value: brief.primaryAction.target,
+        }
+      : null;
+
+  return {
+    ...createInitialBrief(brief.prompt),
+    prompt: brief.prompt,
+    businessName: brief.business.name,
+    businessType: brief.business.type,
+    offer: primaryOffer,
+    targetCustomer: brief.audience ?? "",
+    contactOrCta: primaryActionLabel,
+    stylePreference: brief.visualDirection ?? "",
+    facts: brief.provenance.facts,
+    decisions: brief.provenance.decisions,
+    visitorJobs: brief.visitorJobs,
+    productOrService: brief.offers.length ? brief.offers : null,
+    contact,
+    tagline: brief.content.tagline,
+    usp: brief.content.usp.length ? brief.content.usp : null,
+    priceRange: brief.content.priceRange,
+    hours: brief.content.hours.length ? brief.content.hours : null,
+    address: brief.content.address,
+    deliveryArea: brief.content.deliveryArea,
+    since: brief.content.since,
+    testimonials: brief.content.testimonials.length
+      ? brief.content.testimonials
+      : null,
+    certifications: brief.content.certifications.length
+      ? brief.content.certifications
+      : null,
+    paymentMethods: brief.content.paymentMethods.length
+      ? brief.content.paymentMethods
+      : null,
+    socialLinks: brief.content.socialLinks.length
+      ? brief.content.socialLinks
+      : null,
+    currentPromo: brief.content.currentPromo,
+    secondaryCta: brief.content.secondaryAction,
+    umkmType: brief.business.category,
+    fieldState: brief.fieldState,
+    businessImages: brief.assets,
   };
 }
 
@@ -110,8 +368,110 @@ export function mergeProjectBriefPatch(
     next.businessName = businessName;
   }
 
+  if (patch.umkmType !== undefined && patch.umkmType !== null) {
+    next.umkmType = patch.umkmType;
+  }
+
+  if (patch.fieldState) {
+    next.fieldState = { ...next.fieldState, ...patch.fieldState };
+  }
+
+  if (Array.isArray(patch.facts)) {
+    next.facts = mergeFacts(next.facts ?? [], patch.facts);
+  }
+
+  if (Array.isArray(patch.decisions)) {
+    next.decisions = mergeDecisions(next.decisions ?? [], patch.decisions);
+  }
+
+  if (patch.visitorJobs !== undefined) {
+    const parsed = parseVisitorJobs(patch.visitorJobs);
+    if (parsed.ok) {
+      next.visitorJobs = parsed.value;
+    }
+  }
+
   if (Array.isArray(patch.notes)) {
     next.notes = [...next.notes, ...patch.notes.filter(isString)].slice(-24);
+  }
+
+  if ("confidence" in patch) {
+    next.confidence = normalizeConfidence(patch.confidence);
+  }
+
+  if (Array.isArray(patch.openQuestions)) {
+    next.openQuestions = patch.openQuestions.filter(isString).slice(-12);
+  }
+
+  const answered = new Set(next.decisions?.map((d) => d.id) ?? []);
+  next.openQuestions = (next.openQuestions ?? []).filter(
+    (q) => !answered.has(q),
+  );
+
+  // Typed rich fields. The validator scrubs hallucinated values downstream; we
+  if (Array.isArray(patch.productOrService)) {
+    next.productOrService = patch.productOrService.length
+      ? patch.productOrService
+      : null;
+  }
+  if (patch.contact !== undefined && patch.contact !== null) {
+    next.contact = patch.contact;
+  }
+  if (patch.tagline !== undefined && patch.tagline !== null) {
+    next.tagline = patch.tagline;
+  }
+  if (Array.isArray(patch.usp)) {
+    next.usp = patch.usp.length ? patch.usp : null;
+  }
+  if (patch.priceRange !== undefined && patch.priceRange !== null) {
+    next.priceRange = patch.priceRange;
+  }
+  if (patch.visuals !== undefined && patch.visuals !== null) {
+    next.visuals = patch.visuals;
+  }
+  if (Array.isArray(patch.hours)) {
+    next.hours = patch.hours.length ? patch.hours : null;
+  }
+  if (patch.address !== undefined && patch.address !== null) {
+    next.address = patch.address;
+  }
+  if (patch.deliveryArea !== undefined && patch.deliveryArea !== null) {
+    next.deliveryArea = patch.deliveryArea;
+  }
+  if (patch.since !== undefined && patch.since !== null) {
+    next.since = patch.since;
+  }
+  if (Array.isArray(patch.testimonials)) {
+    next.testimonials = patch.testimonials.length ? patch.testimonials : null;
+  }
+  if (Array.isArray(patch.certifications)) {
+    next.certifications = patch.certifications.length
+      ? patch.certifications
+      : null;
+  }
+  if (Array.isArray(patch.paymentMethods)) {
+    next.paymentMethods = patch.paymentMethods.length
+      ? patch.paymentMethods
+      : null;
+  }
+  if (Array.isArray(patch.socialLinks)) {
+    next.socialLinks = patch.socialLinks.length ? patch.socialLinks : null;
+  }
+  if (patch.currentPromo !== undefined && patch.currentPromo !== null) {
+    next.currentPromo = patch.currentPromo;
+  }
+  if (patch.secondaryCta !== undefined && patch.secondaryCta !== null) {
+    next.secondaryCta = patch.secondaryCta;
+  }
+
+  if (Array.isArray(patch.businessImages)) {
+    const merged = new Map(
+      (next.businessImages ?? []).map((img) => [img.id, img]),
+    );
+    for (const img of normalizeBusinessImages(patch.businessImages)) {
+      merged.set(img.id, img);
+    }
+    next.businessImages = [...merged.values()].slice(-12);
   }
 
   return next;
@@ -121,17 +481,8 @@ export function getMissingBriefFields(brief: ProjectBrief) {
   return REQUIRED_FIELDS.filter((field) => !brief[field]);
 }
 
-export function isBriefQuestionId(
-  value: unknown,
-): value is BriefQuestion["id"] {
-  return (
-    typeof value === "string" &&
-    REQUIRED_FIELDS.includes(value as BriefQuestion["id"])
-  );
-}
-
-export function isBriefReady(brief: ProjectBrief) {
-  return getMissingBriefFields(brief).length === 0;
+export function isBriefQuestionId(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 export function briefToBuildPrompt(brief: ProjectBrief) {
@@ -143,16 +494,154 @@ export function briefToBuildPrompt(brief: ProjectBrief) {
     `Target pelanggan: ${brief.targetCustomer}`,
     `Aksi utama: ${brief.contactOrCta}`,
     `Arah visual: ${brief.stylePreference}`,
+    brief.facts?.length
+      ? `Fakta terstruktur: ${brief.facts.map((fact) => `${fact.label}: ${fact.value}`).join("; ")}`
+      : "",
+    brief.decisions?.length
+      ? `Keputusan diskusi: ${brief.decisions.map((decision) => `${decision.question}: ${decision.answer}`).join("; ")}`
+      : "",
+    brief.visitorJobs?.length
+      ? `Tujuan pengunjung: ${brief.visitorJobs.map((job) => `${job.priority}: ${job.goal}`).join("; ")}`
+      : "",
     brief.notes.length ? `Catatan tambahan: ${brief.notes.join("; ")}` : "",
+    brief.businessImages?.length
+      ? `Gambar pelanggan: ${brief.businessImages.map((img) => `/media/${img.id} (${img.purpose})`).join("; ")}`
+      : "",
+    `Tingkat keyakinan: ${brief.confidence ?? 0}%`,
+    brief.openQuestions?.length
+      ? `Pertanyaan terbuka: ${brief.openQuestions.join("; ")}`
+      : "",
   ].filter(Boolean);
 
   return lines.join("\n");
+}
+
+function normalizeBusinessImages(value: unknown): BusinessImageRef[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const result: BusinessImageRef[] = [];
+  for (const item of value) {
+    const input = item as Partial<BusinessImageRef> | null;
+    if (
+      !input ||
+      typeof input.id !== "string" ||
+      !input.id.trim() ||
+      (input.purpose !== "business-image" &&
+        input.purpose !== "logo" &&
+        input.purpose !== "reference")
+    ) {
+      continue;
+    }
+    result.push({
+      id: input.id.trim().slice(0, 1024),
+      purpose: input.purpose,
+    });
+    if (result.length >= 12) {
+      break;
+    }
+  }
+  return result;
+}
+
+function normalizeFacts(value: unknown): ProjectFact[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => {
+      const input = item as Partial<ProjectFact>;
+      return {
+        key: slugValue(input.key),
+        label: stringValue(input.label).slice(0, 80),
+        value: stringValue(input.value).slice(0, 280),
+      };
+    })
+    .filter((item) => item.key && item.label && item.value)
+    .slice(-40);
+}
+
+function normalizeDecisions(value: unknown): ProjectDecision[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => {
+      const input = item as Partial<ProjectDecision>;
+      return {
+        id: slugValue(input.id),
+        question: stringValue(input.question).slice(0, 160),
+        answer: stringValue(input.answer).slice(0, 280),
+      };
+    })
+    .filter((item) => item.id && item.question && item.answer)
+    .slice(-40);
+}
+
+function mergeFacts(current: ProjectFact[], incoming: ProjectFact[]) {
+  const byKey = new Map(current.map((item) => [item.key, item]));
+  for (const item of normalizeFacts(incoming)) {
+    byKey.set(item.key, item);
+  }
+  return [...byKey.values()].slice(-40);
+}
+
+function mergeDecisions(
+  current: ProjectDecision[],
+  incoming: ProjectDecision[],
+) {
+  const byId = new Map(current.map((item) => [item.id, item]));
+  for (const item of normalizeDecisions(incoming)) {
+    byId.set(item.id, item);
+  }
+  return [...byId.values()].slice(-40);
+}
+
+function slugValue(value: unknown) {
+  return stringValue(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9_ -]+/g, "")
+    .replace(/[ -]+/g, "_")
+    .slice(0, 80);
 }
 
 function stringValue(value: unknown) {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
 }
 
+function stringValueOrNull(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim().replace(/\s+/g, " ");
+  return trimmed ? trimmed : null;
+}
+
+export function applyBriefValidator(
+  input: CleanedBrief | unknown,
+): ProjectBrief {
+  const { cleaned } = validateBrief(input);
+  return {
+    ...createInitialBrief(""),
+    ...cleaned,
+    businessName: cleaned.businessName ?? "",
+    targetCustomer: cleaned.targetCustomer ?? "",
+    readyForBuild: false,
+  };
+}
+
 function isString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function normalizeConfidence(value: unknown) {
+  const parsed = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+
+  return Math.min(100, Math.max(0, Math.round(parsed)));
 }

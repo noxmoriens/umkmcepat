@@ -1,0 +1,72 @@
+import "@tanstack/react-start/server-only";
+
+import { redirect } from "@tanstack/react-router";
+
+import { getAuthState } from "@/lib/auth/auth";
+import { isAdminEmail, isWaitlistApproved } from "@/lib/waitlist/waitlist";
+import { isWaitlistEnabled } from "@/lib/waitlist/waitlist-enabled";
+import { isWaitlistGateBypassPath } from "@/lib/waitlist/waitlist-route-access";
+import { resolveUserWaitlistStatus } from "@/routes/api.user.waitlist";
+
+export async function checkRouteGates(pathname: string) {
+  const waitlistBypass = isWaitlistGateBypassPath(pathname);
+
+  let session: Awaited<ReturnType<typeof getAuthState>>["session"] = null;
+  let banned = false;
+  try {
+    const state = await getAuthState();
+    session = state.session;
+    banned = state.banned;
+  } catch (error) {
+    console.warn(
+      "[gates] DB unavailable - allowing request degraded:",
+      error instanceof Error ? error.message : error,
+    );
+    return { ok: true as const };
+  }
+
+  if (banned && pathname !== "/blocked") {
+    throw redirect({ to: "/blocked" });
+  }
+
+  if (banned) {
+    return { ok: true as const };
+  }
+
+  if (!session?.user?.id) {
+    return { ok: true as const };
+  }
+
+  // Admin UI is gated by requireAdmin() (ADMIN_EMAILS allowlist), not
+  if (!waitlistBypass) {
+    try {
+      const email = session.user.email ?? null;
+      const isAdmin = email ? isAdminEmail(email) : false;
+      const waitlistEnabled = await isWaitlistEnabled();
+      const isApproved = email ? await isWaitlistApproved(email) : null;
+      const isDev = process.env.NODE_ENV === "development";
+
+      const resolved = resolveUserWaitlistStatus({
+        email,
+        isAdmin,
+        isApproved,
+        isDevelopment: isDev,
+        waitlistEnabled,
+      });
+
+      if (resolved.status !== "approved") {
+        throw redirect({ to: "/waitlist" });
+      }
+    } catch (error) {
+      if (error instanceof Response) {
+        throw error;
+      }
+      console.warn(
+        "[gates] waitlist check failed - allowing request degraded:",
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
+  return { ok: true as const };
+}

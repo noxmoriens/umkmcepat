@@ -7,6 +7,7 @@ Thanks for helping UMKM Cepat. Keep changes focused, useful, and easy to review.
 - Git
 - Bun, pinned in `package.json`
 - Docker with Compose
+- Signed [CLA.md](CLA.md) (Contributor License Agreement) for any Pull Requests
 
 Bun is the only supported package manager.
 
@@ -26,20 +27,10 @@ Open:
 
 ```text
 http://localhost:3000
-```
-
-Optional AI gateway:
-
-```bash
-bun run infra:ai
-```
-
-```text
 9Router: http://localhost:20129
-Default password: 123456
 ```
 
-See `docs/architecture.md` for provider setup.
+`bun run infra` starts the full local stack (Postgres, Redis, 9Router, Headroom, MinIO). 9Router's default dashboard password is documented in its own project, not here — check it after first boot rather than trusting a copy of it in this repo.
 
 ## Optional agent code map
 
@@ -71,14 +62,14 @@ Open PRs into `dev` first unless maintainers say otherwise.
 
 ## Where to read next
 
-- `PRINCIPLES.md` — quality bar and operating taste.
-- `DEV.md` — maintainer workflow, commands, Storybook, Graphify, checks.
-- `DESIGN.md` — visual system and UI rules.
-- `docs/architecture.md` — project/workspace/renderer/provider/storage/auth/AI constraints.
-- `docs/deployment.md` — Docker, VPS, storage persistence, and Sentry setup.
+- `docs/notes/backlog.md`: active backlog, tasks, and future improvements.
+- `PRINCIPLES.md`: quality bar and operating taste.
+- `DEV.md`: maintainer workflow, commands, Storybook, Graphify, checks.
+- `DESIGN.md`: visual system and UI rules.
+- `docs/`: the decision trail, architecture overview, and guides behind project, runtime, provider, storage, auth, AI-gateway, and deployment behavior.
 
 ## Safety
 
-- Do not commit `.env`, secrets, OAuth credentials, provider keys, private data, local uploads, logs, screenshots, `.next/`, `.pi/`, `.browser/`, `graphify-out/`, `storybook-static/`, or coverage artifacts.
+- Do not commit `.env`, secrets, OAuth credentials, provider keys, private data, local uploads, logs, screenshots, `.next/`, `.pi/`, `.browser/`, `graphify-out/`, or coverage artifacts.
 - Ask before destructive local operations such as deleting Docker volumes, local uploads, or user files.
 - If Docker is missing or stopped, start Docker Desktop or Docker Engine before running infrastructure commands.

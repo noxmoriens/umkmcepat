@@ -1,58 +1,55 @@
 "use client";
 
-import { Camera, Loader2 } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { useSession } from "next-auth/react";
-import { ChangeEvent, FormEvent, useRef, useState } from "react";
-import { toast } from "sonner";
+import { Loader2 } from "lucide-react";
+import { FormEvent, useState } from "react";
 
 import { AvatarFrame } from "@/components/ui/avatar-frame";
 import { Button } from "@/components/ui/button";
+import { useSession } from "@/lib/auth/auth-client";
+import { useRouter } from "@/lib/navigation";
+import { fetchJson, useCacheMutation } from "@/lib/query-client";
 
-const PROFILE_IMAGE_MAX_BYTES = 1_000_000;
-
-export function ProfileNameForm({
-  initialImage,
-  initialName,
-}: {
-  initialImage: string;
-  initialName: string;
-}) {
+export function ProfileNameForm({ initialName }: { initialName: string }) {
   const router = useRouter();
   const { update } = useSession();
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const [savedName, setSavedName] = useState(normalizeName(initialName));
   const [name, setName] = useState(normalizeName(initialName));
-  const [imagePreview, setImagePreview] = useState(initialImage);
-  const [imageDataUrl, setImageDataUrl] = useState("");
   const [error, setError] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
   const normalizedName = normalizeName(name);
-  const isChanged = normalizedName !== savedName || Boolean(imageDataUrl);
-  const initial = normalizedName[0]?.toUpperCase() || "U";
+  const isChanged = normalizedName !== savedName;
 
-  async function handleImageChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    setError("");
+  const saveMutation = useCacheMutation<
+    { user: { name?: string | null } },
+    { name: string }
+  >({
+    mutationFn: async (payload) =>
+      fetchJson<{ user: { name?: string | null } }>("/api/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+    successMessage: "Profil disimpan.",
+    errorMessage: "Profil belum berhasil disimpan.",
+    onSuccess: async (result) => {
+      if (!result.user?.name) {
+        setError("Profil belum berhasil disimpan.");
+        return;
+      }
 
-    if (!file) {
-      return;
-    }
-
-    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
-      setError("Foto harus berupa PNG, JPG, atau WebP.");
-      return;
-    }
-
-    if (file.size > PROFILE_IMAGE_MAX_BYTES) {
-      setError("Ukuran foto maksimal 1 MB.");
-      return;
-    }
-
-    const dataUrl = await readFileAsDataUrl(file);
-    setImageDataUrl(dataUrl);
-    setImagePreview(dataUrl);
-  }
+      const nextName = normalizeName(result.user.name);
+      setSavedName(nextName);
+      setName(nextName);
+      await update({ name: nextName });
+      router.refresh();
+    },
+    onError: (mutationError) => {
+      setError(
+        mutationError instanceof Error
+          ? mutationError.message
+          : "Profil belum berhasil disimpan.",
+      );
+    },
+  });
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -63,86 +60,30 @@ export function ProfileNameForm({
       return;
     }
 
-    if (isSaving) {
+    if (saveMutation.isPending) {
       return;
     }
 
-    setIsSaving(true);
-
-    try {
-      const response = await fetch("/api/profile", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          imageDataUrl: imageDataUrl || undefined,
-          name: normalizedName,
-        }),
-      });
-      const result = (await response.json().catch(() => ({}))) as {
-        message?: string;
-        user?: { image?: string | null; name?: string | null };
-      };
-
-      if (!response.ok || !result.user?.name) {
-        setError(result.message || "Profil belum berhasil disimpan.");
-        return;
-      }
-
-      const nextName = normalizeName(result.user.name);
-      const nextImage = result.user.image || imagePreview;
-      setSavedName(nextName);
-      setName(nextName);
-      setImageDataUrl("");
-      setImagePreview(nextImage);
-      toast.success("Profil disimpan.");
-
-      await update({ image: nextImage, name: nextName });
-      router.refresh();
-    } catch {
-      setError("Profil belum berhasil disimpan.");
-    } finally {
-      setIsSaving(false);
-    }
+    saveMutation.mutate({
+      name: normalizedName,
+    });
   }
+
+  const isSaving = saveMutation.isPending;
 
   return (
     <form onSubmit={handleSubmit} className="space-y-spacing-7">
       <div className="flex flex-col gap-spacing-6 sm:flex-row sm:items-center">
         <AvatarFrame
-          image={imagePreview}
-          initial={initial}
-          className="grid size-24 place-items-center border border-surface-warm-white/12 bg-surface-warm-white/8 text-3xl font-semibold text-surface-warm-white shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
+          seed={name}
+          className="grid size-20 place-items-center border border-black/10 bg-black/[0.03] text-[#1c1c1c] dark:border-white/10 dark:bg-white/[0.04] dark:text-surface-warm-white"
         />
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-surface-warm-white">
-            Foto profil
-          </p>
-          <div className="mt-spacing-4 flex flex-wrap gap-spacing-3">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => fileInputRef.current?.click()}
-              className="rounded-radius-lg border-surface-warm-white/12 bg-surface-warm-white/8 text-surface-warm-white hover:bg-surface-warm-white/12"
-            >
-              <Camera className="size-4" />
-              Ganti foto
-            </Button>
-          </div>
-          <input
-            ref={fileInputRef}
-            aria-label="Unggah foto profil"
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            className="sr-only"
-            onChange={handleImageChange}
-          />
-        </div>
       </div>
 
-      <div>
+      <div className="border-t border-black/10 pt-spacing-7 dark:border-white/[0.07]">
         <label
           htmlFor="profile-name"
-          className="text-sm font-medium text-surface-warm-white"
+          className="text-sm font-medium text-[#1c1c1c] dark:text-surface-warm-white"
         >
           Nama
         </label>
@@ -153,23 +94,23 @@ export function ProfileNameForm({
           onChange={(event) => setName(event.target.value)}
           maxLength={100}
           autoComplete="name"
-          className="mt-spacing-3 w-full rounded-radius-lg border border-surface-warm-white/10 bg-[#1b1b19] px-spacing-6 py-spacing-5 text-base text-surface-warm-white outline-none transition placeholder:text-surface-warm-white/34 focus:border-surface-warm-white/28 focus:ring-2 focus:ring-surface-warm-white/10"
+          className="mt-spacing-3 w-full rounded-lg border border-black/15 bg-transparent px-spacing-5 py-spacing-4 text-base text-[#1c1c1c] outline-none transition placeholder:text-black/30 focus:border-accent-orange focus:ring-1 focus:ring-accent-orange dark:border-white/10 dark:text-surface-warm-white dark:placeholder:text-surface-warm-white/34 dark:focus:border-white/30 dark:focus:ring-white/20"
           placeholder="Nama kamu"
         />
       </div>
 
-      {error ? <p className="text-sm text-[#ffb4a6]">{error}</p> : null}
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
-      <div className="flex flex-col-reverse gap-spacing-3 sm:flex-row sm:items-center sm:justify-end">
+      <div className="flex justify-end border-t border-black/10 pt-spacing-7 dark:border-white/[0.07]">
         <Button
           type="submit"
           disabled={!isChanged || isSaving}
-          className="rounded-radius-lg bg-surface-warm-white px-spacing-8 text-foreground-primary hover:bg-surface-warm-white/86 disabled:opacity-45"
+          className="rounded-lg bg-[#1c1c1c] px-spacing-8 text-white hover:bg-[#1c1c1c]/90 disabled:opacity-40 dark:bg-white dark:text-[#141413] dark:hover:bg-white/90"
         >
           {isSaving ? (
             <>
               <Loader2 className="size-4 animate-spin" />
-              Menyimpan
+              Menyimpan...
             </>
           ) : (
             "Simpan profil"
@@ -181,21 +122,5 @@ export function ProfileNameForm({
 }
 
 function normalizeName(value: string) {
-  return value.trim().replace(/\s+/g, " ").slice(0, 100);
-}
-
-function readFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.addEventListener("load", () => {
-      if (typeof reader.result === "string") {
-        resolve(reader.result);
-        return;
-      }
-
-      reject(new Error("Foto tidak bisa dibaca."));
-    });
-    reader.addEventListener("error", () => reject(reader.error));
-    reader.readAsDataURL(file);
-  });
+  return value.trim().replace(/\s+/g, " ");
 }

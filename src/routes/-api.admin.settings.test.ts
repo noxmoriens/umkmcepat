@@ -1,0 +1,85 @@
+import { describe, expect, it } from "vitest";
+
+import { validateSettingValue } from "@/routes/api.admin.settings";
+
+describe("validateSettingValue", () => {
+  it("accepts an in-range number", () => {
+    expect(
+      validateSettingValue("ratelimit.ai_ip.requests", 20, "rate_limit"),
+    ).toBeNull();
+  });
+
+  it("rejects a number below min", () => {
+    expect(
+      validateSettingValue("ratelimit.ai_ip.requests", 0, "rate_limit"),
+    ).toMatch(/must be between/);
+  });
+
+  it("rejects a number above max", () => {
+    expect(
+      validateSettingValue("ratelimit.ai_ip.requests", 999_999, "rate_limit"),
+    ).toMatch(/must be between/);
+  });
+
+  it("rejects a key from the wrong category", () => {
+    expect(validateSettingValue("ratelimit.ai_ip.requests", 20, "ai")).toMatch(
+      /Invalid key/,
+    );
+  });
+
+  it("rejects an unknown key", () => {
+    expect(validateSettingValue("nope.nope", 1, "ai")).toMatch(/Invalid key/);
+  });
+
+  it("rejects a wrong-typed value", () => {
+    expect(
+      validateSettingValue("feature.streamer_mode", 1, "feature_flag"),
+    ).toMatch(/must be a boolean/);
+  });
+
+  it("accepts critic sampling in AI category", () => {
+    expect(
+      validateSettingValue(
+        "quality.generated_site_critic_sample_rate",
+        0.25,
+        "ai",
+      ),
+    ).toBeNull();
+    expect(
+      validateSettingValue(
+        "quality.generated_site_critic_sample_rate",
+        0.25,
+        "feature_flag",
+      ),
+    ).toMatch(/Invalid key/);
+  });
+
+  it("rejects settled implementation controls", () => {
+    for (const key of [
+      "feature.builder_photo_enabled",
+      "feature.generated_site_quality_rollout",
+      "discuss.parallel_moderation",
+      "discuss.partial_tool_streaming",
+    ]) {
+      expect(validateSettingValue(key, true, "feature_flag")).toMatch(
+        /Invalid key/,
+      );
+    }
+  });
+
+  it("rejects the removed generation rollout key", () => {
+    expect(
+      validateSettingValue(
+        "generation.contract_compiled_rollout",
+        "all",
+        "feature_flag",
+      ),
+    ).toMatch(/Invalid key/);
+  });
+
+  it("rejects the removed batched rollout key", () => {
+    expect(
+      validateSettingValue("generation.batched_rollout", "all", "feature_flag"),
+    ).toMatch(/Invalid key/);
+  });
+});

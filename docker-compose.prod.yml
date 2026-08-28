@@ -1,11 +1,12 @@
 services:
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/suryaelidanto/umkmcepat-app:${APP_IMAGE_TAG:-latest}
     container_name: umkmcepat-app
     restart: unless-stopped
+    dns: ["1.1.1.1", "8.8.8.8"]
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       9router:
@@ -13,21 +14,65 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-umkmcepat}?schema=public
+      DATABASE_URL: postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-umkmcepat}?schema=public
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
       NINE_ROUTER_BASE_URL: ${NINE_ROUTER_BASE_URL:-http://9router:20128/v1}
       OBJECT_STORAGE_PROVIDER: ${OBJECT_STORAGE_PROVIDER:-local}
-      LOCAL_UPLOAD_DIR: ${LOCAL_UPLOAD_DIR:-.data/uploads}
+      LOCAL_UPLOAD_DIR: ${LOCAL_UPLOAD_DIR:-/app/.data/uploads}
+      GENERATED_BUILD_EXECUTION_ENABLED: "false"
+      GENERATED_PUBLIC_EXECUTION_ENABLED: "false"
+      GENERATED_PUBLIC_ORIGIN: ${GENERATED_PUBLIC_ORIGIN:-}
+      PROJECT_ARTIFACT_STORAGE_PROVIDER: local
+      PROJECT_ARTIFACT_DIR: /app/.data/project-artifacts
+      PROJECT_THUMBNAIL_DIR: /app/.data/project-thumbnails
+      PROJECT_THUMBNAIL_CAPTURE_ENABLED: "true"
+      PROJECT_THUMBNAIL_BROWSER_PATH: /usr/bin/chromium-browser
+      PROJECT_THUMBNAIL_CONCURRENCY: ${PROJECT_THUMBNAIL_CONCURRENCY:-1}
+      PROJECT_THUMBNAIL_TIMEOUT_MS: ${PROJECT_THUMBNAIL_TIMEOUT_MS:-15000}
+      PROJECT_ARTIFACT_R2_PREFIX: ${PROJECT_ARTIFACT_R2_PREFIX:-project-artifacts}
+      PROJECT_RUNTIME_SUPERVISOR: noop
+      PROJECT_RUNTIME_ALLOWED_HOSTS: ${PROJECT_RUNTIME_ALLOWED_HOSTS:-127.0.0.1,localhost}
+      PROJECT_RUNTIME_HEALTH_TIMEOUT_MS: ${PROJECT_RUNTIME_HEALTH_TIMEOUT_MS:-2000}
+      PROJECT_RUNTIME_PROXY_TIMEOUT_MS: ${PROJECT_RUNTIME_PROXY_TIMEOUT_MS:-15000}
     ports:
       - "127.0.0.1:3000:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "const r=await fetch('http://127.0.0.1:3000/api/health/ready');process.exit(r.ok?0:1)",
+        ]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 4
     volumes:
       - uploads:/app/.data/uploads
+      - project_artifacts:/app/.data/project-artifacts
+      - project_thumbnails:/app/.data/project-thumbnails
+
+  migrate:
+    image: ghcr.io/suryaelidanto/umkmcepat-app:${APP_IMAGE_TAG:-latest}
+    container_name: umkmcepat-migrate
+    restart: "no"
+    dns: ["1.1.1.1", "8.8.8.8"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-umkmcepat}?schema=public
+    command: ["bunx", "prisma", "migrate", "deploy"]
 
   9router:
-    image: decolua/9router:latest
+    image: docker.io/decolua/9router:latest
     container_name: umkmcepat-9router
     restart: unless-stopped
+    dns: ["1.1.1.1", "8.8.8.8"]
     depends_on:
       - headroom
     environment:
@@ -46,19 +91,23 @@ services:
       dockerfile: Dockerfile.headroom
     container_name: umkmcepat-headroom
     restart: unless-stopped
+    dns: ["1.1.1.1", "8.8.8.8"]
     environment:
       HEADROOM_TELEMETRY: off
 
   postgres:
-    image: postgres:16-alpine
+    image: docker.io/postgres:16-alpine
     container_name: umkmcepat-postgres
     restart: unless-stopped
+    dns: ["1.1.1.1", "8.8.8.8"]
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:-umkmcepat}
+      TZ: UTC
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./prisma/init-umami.sql:/docker-entrypoint-initdb.d/10-create-umami-db.sql:ro
     healthcheck:
       test:
         [
@@ -69,7 +118,52 @@ services:
       timeout: 5s
       retries: 5
 
+  # Usage/behavior analytics (shares the platform Postgres).
+  umami:
+    image: ghcr.io/umami-software/umami:postgresql-latest
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/umami
+      APP_SECRET: ${UMAMI_APP_SECRET:?UMAMI_APP_SECRET is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3001:3000"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/heartbeat || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Availability monitoring (standalone SQLite; pings the app + key endpoints).
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    volumes:
+      - uptime_kuma_data:/app/data
+    ports:
+      - "127.0.0.1:3002:3001"
+    restart: unless-stopped
+
+  # Ingress. No inbound ports are opened on the host; cloudflared dials out to
+  # Cloudflare and traffic arrives over that connection. Every other service
+  # stays bound to 127.0.0.1.
+  cloudflared:
+    image: docker.io/cloudflare/cloudflared:latest
+    container_name: umkmcepat-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN is required}
+    depends_on:
+      app:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   nine_router_data:
+  project_artifacts:
+  project_thumbnails:
   uploads:
+  uptime_kuma_data:

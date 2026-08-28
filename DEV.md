@@ -1,182 +1,179 @@
-# Development SOP
+# Development Guide & Engineering Standards
 
-Maintainer and agent workflow for UMKM Cepat. For the quality bar, read `PRINCIPLES.md`. For contributor onboarding, start with `CONTRIBUTING.md`.
+Workflow and engineering standards for UMKM Cepat. For high-level design principles, read `PRINCIPLES.md`.
 
-## Core rules
+---
 
-- Keep changes small and reviewable.
-- Keep every developer-facing or internal-facing surface in English: docs, system prompts, agent prompts, code names, comments, logs, errors, test names, commits, scripts, and internal tooling copy.
-- Keep only consumer-facing product UI copy in Indonesian unless an i18n layer is introduced.
-- Do not commit secrets, `.env`, local logs, screenshots, browser artifacts, uploads, or generated junk.
+## 1. Core Engineering Rules
 
-## Local runtime
+- **Domain before file type**: Organize all features by product area or domain first. Never use generic catch-all folders (`hooks`, `utils`, `helpers`, `misc`). Local hooks, schemas, types, and helpers live beside the feature.
+- **Colocated tests**: Single-module unit and component tests sit directly beside the source (`foo.ts` + `foo.test.ts`). Top-level `tests/` is strictly for cross-domain (`tests/unit`), real DB integration (`tests/integration/*.itest.ts`), browser audits (`tests/browser/*.browser.test.ts`), and test harnesses (`tests/support`).
+- **Zero `any`**: `any` disables the type-checker. Use `unknown` with explicit narrowing or Zod parsing. Never commit `@ts-ignore` or `eslint-disable`.
+- **The Unbreakable Bar (never lower the test standard)**: When a test fails, fix the production code and elevate the logic. Never soften assertions (e.g. replacing specific equality with loose `.toBeDefined()`), never delete or comment out valid boundary tests, and never write shallow pass-through tests just to get a cheap green check. If a test caught a break, fix the root cause.
+- **Never test stochastic output, classNames, or HTML markup**: Unit and component tests must assert data structures, Zod schemas, and deterministic contracts. Never assert exact className strings, Tailwind utility lists, HTML tag trees, anchor strings, model answer wording, palette hues, or AI generated snapshots. Testing markup or styling creates rigid template-ish generator behavior. Rendered aesthetic quality belongs to visual inspection.
+- **Single-line comments only**: Write self-explanatory code. Never narrate code, write block comments, or draw ASCII banners (`// ---`). Authored comments delete by default. Keep only strictly necessary single-line explanations for non-obvious invariants.
+- **Fail loud at trust boundaries**: Validate untrusted input at server boundaries, check object ownership on every mutation, and fail closed on auth, payment, or publishing failures.
+- **English for developer surfaces, Indonesian for user copy**: Developer tools, errors, logs, prompts, comments, and documentation are strictly in English. Customer-facing product UI copy is in Indonesian.
+- **No secrets in tracked files**: Environment variables, API keys, tokens, and credentials belong only in `.env` (gitignored). Documentation examples use empty `""` values.
+- **Task Tracking in `docs/notes/backlog.md`**: Living project backlog is maintained as an Obsidian-compatible Kanban board (`Backlog` $\rightarrow$ `In Progress` $\rightarrow$ `Needs Revision / Check Again` $\rightarrow$ `Ready for Review` $\rightarrow$ `Done` $\rightarrow$ `Future / Icebox`).
+  - Use `add-backlog` to append isolated tasks directly with sequential `[#XX]` codes.
+  - Use `do-backlog` to inspect revisions, evaluate priorities, propose task grouping, confirm with the developer, and execute with full verification.
+  - Priority #1: Address items in `## Needs Revision / Check Again`.
+  - Priority #2: Resume items in `## In Progress`.
+  - Priority #3: Propose and pull tasks from `## Backlog` $\rightarrow$ `## In Progress`.
+  - Implement minimal code, assert deterministic invariants in tests, and verify with `bun run check`.
+  - Completed agent tasks ALWAYS stop at `## Ready for Review`. Agents NEVER move cards to `## Done`. Only the human developer moves approved tasks to `## Done` (or back to `## Needs Revision / Check Again` if rejected).
 
-Use Bun only. The version is pinned in `package.json`, and `bun.lock` is canonical.
+---
+
+## 2. Quality Gates & Fast Local Loop
+
+Run `bun run check` locally before committing:
 
 ```bash
-bun install
-cp .env.example .env
-bun run infra
-bun run db:migrate
-bun run dev
+bun run check        # Fast cached parallel check: locks + routes + format + lint + typecheck + tests + Knip + discipline + docs
+bun run verify       # Full verification suite before release
 ```
 
-Open:
+Individual focused commands:
+
+```bash
+bun run typecheck    # TypeScript compiler check
+bun run lint         # ESLint check
+bun run format:check # Prettier check
+bun run check:knip   # Dead exports and unused file detector
+bun run check:discipline # Anti-pattern and directory layout scanner
+```
+
+---
+
+## 3. Architecture & Code Conventions
+
+### Folder Organization
+
+**GREAT (Feature-bounded domain):**
 
 ```text
-App: http://localhost:3000
+src/
+  components/
+    projects/
+      workspace/
+        WorkspaceShell.tsx
+        WorkspaceHistoryDrawer.tsx
+        WorkspacePrimitives.tsx
+        useWorkspaceState.ts
+      chat/
+        ChatMessage.tsx
+        ComposerAttachments.tsx
+  lib/
+    projects/
+      build-attempt-worker.ts
+      build-attempt-worker.test.ts
+      snapshots.ts
+      snapshots.test.ts
 ```
 
-Optional AI gateway:
-
-```bash
-bun run infra:ai
-```
+**BAD (Scattered catch-alls):**
 
 ```text
-9Router: http://localhost:20129
+src/
+  hooks/
+    useWorkspaceState.ts
+  utils/
+    snapshots.ts
+  components/
+    WorkspaceShell.tsx
+    ChatMessage.tsx
 ```
 
-Useful infrastructure commands:
+---
+
+### Type Safety & Narrowing
+
+**GREAT:**
+
+```ts
+export function parseProjectConfig(raw: unknown): ProjectConfig {
+  const result = projectConfigSchema.safeParse(raw);
+  if (!result.success) {
+    throw new Error(`Invalid project configuration: ${result.error.message}`);
+  }
+  return result.data;
+}
+```
+
+**BAD:**
+
+```ts
+export function parseProjectConfig(raw: any): ProjectConfig {
+  return raw as ProjectConfig;
+}
+```
+
+---
+
+### AI Testing Rules (Deterministic Invariants Only)
+
+**IRON LAW:** Never write TDD or unit tests that assert AI model prose, answer wording, Indonesian phrasing, taste, palette hues, fonts, layout structure, card counts, section sequences, or generated source snapshots.
+
+**GREAT (Asserting schema, type boundaries, and safety):**
+
+```ts
+describe("presentWorkspaceCardTool", () => {
+  it("validates tool arguments matching schema", () => {
+    const input = {
+      assistantText: "Halo, nama tokomu apa?",
+      workspaceCard: {
+        type: "question",
+        question: {
+          id: "business_name",
+          question: "Apa nama toko kamu?",
+          answerMode: "text",
+          required: true,
+          selectionMode: "single",
+          options: [],
+        },
+      },
+    };
+    const parsed = presentWorkspaceCardInputSchema.safeParse(input);
+    expect(parsed.success).toBe(true);
+  });
+});
+```
+
+**BAD (Pinning model phrasing or creative taste):**
+
+```ts
+describe("discuss output", () => {
+  it("says exactly this text", () => {
+    expect(response.text).toBe("Hai! Aku bantu bikinin toko online ya.");
+  });
+});
+```
+
+---
+
+### Component Styling & Tokens
+
+- Reusable application design system components live in `src/components/ui/`.
+- Use Tailwind v4 semantic tokens (`bg-background`, `text-foreground`, `bg-primary`, `text-primary-foreground`, `border-border`, `ring-ring`) rather than arbitrary hardcoded hex codes.
+- Use `cn()` from `@/lib/utils` for conditional class joining.
+
+---
+
+## 4. Local Infrastructure
+
+Full local stack via Docker Compose:
+
+- **Postgres**: Application database
+- **Redis**: BullMQ job queues and pub/sub events
+- **9Router / Headroom**: AI proxy and rate limiting
+- **MinIO**: S3-compatible local object storage (port `9000`)
 
 ```bash
-bun run infra:ps
-bun run infra:logs
-bun run infra:down
+bun run infra         # Start local containers
+bun run db:migrate    # Run database migrations
+bun run dev           # Start Vite dev server on port 3000
+bun run dev:reset     # Safely reset port 3000 if occupied
+bun run infra:down    # Stop local containers
 ```
-
-If Docker is missing, install/start Docker Desktop or Docker Engine. If `.next` gets stale, stop the dev server, remove `.next`, then restart `bun run dev`.
-
-## Environment
-
-`.env.example` is the canonical placeholder list. Important local defaults:
-
-```env
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/umkmcepat?schema=public"
-AI_PROVIDER="9router"
-NINE_ROUTER_BASE_URL="http://localhost:20129/v1"
-OBJECT_STORAGE_PROVIDER="local"
-LOCAL_UPLOAD_DIR=".data/uploads"
-RATE_LIMIT_PROVIDER="memory"
-```
-
-Set Google OAuth, Turnstile, Sentry, Chromatic, and AI provider secrets only in `.env` or deployment secrets.
-
-## Graphify
-
-Graphify is recommended for non-trivial discovery and reuse checks. It is user-local, not a project dependency.
-
-```bash
-uv tool install graphifyy
-bun run setup:agent
-bun run graph:update
-```
-
-Then read the source files Graphify returns. Do not treat Graphify output as a replacement for source or canonical docs.
-
-## Quality gate
-
-Run before handoff or PR:
-
-```bash
-bun run check
-```
-
-This runs lockfile guard, Prettier, ESLint, TypeScript, Vitest, and Knip.
-
-Do not run build during normal development unless requested or touching build/deployment behavior:
-
-```bash
-bun run build
-```
-
-CI runs `bun run check`, `bun run build`, Storybook build/tests, and optional Chromatic.
-
-## TDD workflow
-
-For behavior changes:
-
-1. Add one behavior test.
-2. Watch it fail.
-3. Implement the smallest change.
-4. Run the targeted test.
-5. Run `bun run check`.
-
-Test behavior boundaries and non-trivial logic, not private implementation details.
-
-## UI workflow
-
-For UI, styling, layout, typography, colors, or components:
-
-1. Read `DESIGN.md`.
-2. Reuse `src/components/ui`, design tokens, and existing stories first.
-3. Check Storybook foundations, atoms, molecules, and organisms.
-4. Add or update a Storybook story for new reusable UI or meaningful repeated visual states.
-5. Keep visible product copy Indonesian; keep Storybook/developer chrome and internal prompts English.
-
-Storybook:
-
-```bash
-bun run storybook
-bun run storybook:build
-bun run test:storybook
-```
-
-```text
-Storybook: http://localhost:6006
-```
-
-Chromatic requires `CHROMATIC_PROJECT_TOKEN`:
-
-```bash
-bun run chromatic
-```
-
-## Lighthouse
-
-Local release/performance guardrail only; not CI/CD or pre-commit. See `docs/lighthouse.md` for scope, thresholds, and interpretation.
-
-```bash
-bun run lighthouse
-bun run lighthouse:mobile
-bun run lighthouse:desktop
-```
-
-Reports are written to `.lighthouseci/` and ignored by Git.
-
-## shadcn/ui
-
-Config lives in `components.json`. Owned primitives live under `src/components/ui`.
-
-```bash
-bunx shadcn@latest add button card input
-bunx shadcn@latest add button --dry-run
-bunx shadcn@latest add button --diff
-```
-
-Do not paste raw component source from external pages.
-
-## Architecture docs
-
-Read the relevant doc before touching that area:
-
-- Project/runtime/provider/storage/auth/AI gateway changes: `docs/architecture.md`
-- Docker/VPS/deployment/monitoring changes: `docs/deployment.md`
-
-Core architecture rule:
-
-```text
-one platform app, many project rows, one shared renderer
-```
-
-Do not add per-user apps, per-project containers, arbitrary user backend code, or generated source files as the primary platform runtime.
-
-## Final handoff checklist
-
-- `git status --short --untracked-files=all` inspected.
-- No accidental local artifacts.
-- No secrets in tracked files.
-- Relevant docs updated, or handoff states why docs did not need changes.
-- `bun run check` passed.
-- `bun run build` passed only when required.
-- Browser/UI evidence included when browser review was used.

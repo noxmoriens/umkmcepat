@@ -1,0 +1,429 @@
+import { createFileRoute } from "@tanstack/react-router";
+
+import { auth } from "@/lib/auth/auth";
+import { prisma } from "@/lib/prisma";
+import { isPrismaDatabaseUnavailable } from "@/lib/prisma-errors";
+import {
+  selectActivePreviewDeployment,
+  selectActivePublishedDeployment,
+  selectLatestAttempt,
+  selectLatestFailedAttempt,
+  selectLatestSuccessfulBuild,
+} from "@/lib/projects/deployment-resolution";
+import { projectHasPersistedSource } from "@/lib/projects/load-persisted-project-source";
+import { deriveActiveProjectJob } from "@/lib/projects/project-job";
+import { getRuntimeSupervisor } from "@/lib/projects/runtime-supervisor";
+import { markStaleProjectBuilds } from "@/lib/projects/stale-builds";
+import { isAdminEmail } from "@/lib/waitlist/waitlist";
+
+const runtimeStateCache = new Map<
+  string,
+  {
+    body: unknown;
+    expiresAt: number;
+    projectId: string;
+    userId: string;
+  }
+>();
+const RUNTIME_STATE_CACHE_TTL_MS = 15_000;
+const RUNTIME_STATE_CACHE_MAX_ENTRIES = 200;
+
+export const Route = createFileRoute("/api/projects/$id/runtime")({
+  server: {
+    handlers: {
+      GET: async ({ params }) => {
+        const session = await auth();
+
+        if (!session?.user?.id) {
+          return Response.json(
+            { message: "Masuk dulu untuk melanjutkan." },
+            { status: 401 },
+          );
+        }
+
+        const { id } = params;
+
+        try {
+          return await getRuntimeState({
+            admin: isAdminEmail(session.user.email ?? ""),
+            id,
+            userId: session.user.id,
+          });
+        } catch (error) {
+          if (isPrismaDatabaseUnavailable(error)) {
+            const cached = readRuntimeStateCache(session.user.id, id);
+
+            if (cached) {
+              return Response.json(cached.body, {
+                headers: { "X-UMKM-Runtime-Cache": "stale" },
+              });
+            }
+
+            return Response.json(
+              {
+                code: "database_unavailable",
+                message:
+                  "Status website lagi nyambung ulang. Tampilan terakhir tetap aman.",
+              },
+              { status: 503, headers: { "Retry-After": "3" } },
+            );
+          }
+
+          throw error;
+        }
+      },
+    },
+  },
+});
+
+async function getRuntimeState({
+  admin,
+  id,
+  userId,
+}: {
+  admin: boolean;
+  id: string;
+  userId: string;
+}) {
+  const project = await prisma.project.findFirst({
+    where: { id, ...(admin ? {} : { userId }) },
+    select: {
+      buildStatus: true,
+      id: true,
+      status: true,
+      user: { select: { bannedAt: true } },
+      userId: true,
+    },
+  });
+
+  if (!project) {
+    return Response.json(
+      { message: "Proyek tidak ditemukan." },
+      { status: 404 },
+    );
+  }
+
+  await markStaleProjectBuilds(project.id);
+
+  const [builds, previewDeployments, publishedDeployments, events, attempts] =
+    await Promise.all([
+      prisma.projectBuild.findMany({
+        where: { projectId: project.id },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        select: {
+          artifactRef: true,
+          createdAt: true,
+          finishedAt: true,
+          id: true,
+          logText: true,
+          startedAt: true,
+          status: true,
+          updatedAt: true,
+        },
+      }),
+      prisma.projectDeployment.findMany({
+        where: { kind: "preview", projectId: project.id },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        select: {
+          build: {
+            select: {
+              artifactRef: true,
+              createdAt: true,
+              id: true,
+              snapshotId: true,
+              status: true,
+              updatedAt: true,
+            },
+          },
+          buildId: true,
+          createdAt: true,
+          id: true,
+          kind: true,
+          lastRequestAt: true,
+          publicPath: true,
+          startedAt: true,
+          status: true,
+          stoppedAt: true,
+          updatedAt: true,
+        },
+      }),
+      prisma.projectDeployment.findMany({
+        where: { kind: "published", projectId: project.id },
+        orderBy: { updatedAt: "desc" },
+        take: 20,
+        select: {
+          build: {
+            select: {
+              artifactRef: true,
+              createdAt: true,
+              id: true,
+              snapshotId: true,
+              status: true,
+              updatedAt: true,
+            },
+          },
+          buildId: true,
+          createdAt: true,
+          id: true,
+          kind: true,
+          publicPath: true,
+          snapshotId: true,
+          slug: true,
+          status: true,
+          updatedAt: true,
+        },
+      }),
+      prisma.runtimeEvent.findMany({
+        where: { projectId: project.id },
+        orderBy: { createdAt: "desc" },
+        select: {
+          buildId: true,
+          createdAt: true,
+          deploymentId: true,
+          id: true,
+          message: true,
+          metadata: true,
+          type: true,
+        },
+        take: 40,
+      }),
+      prisma.projectEditAttempt.findMany({
+        where: { projectId: project.id },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+        select: {
+          buildId: true,
+          finishedAt: true,
+          id: true,
+          kind: true,
+          startedAt: true,
+          status: true,
+          updatedAt: true,
+        },
+      }),
+    ]);
+  const latestAttempt = selectLatestAttempt(builds);
+  const latestFailedAttempt = selectLatestFailedAttempt(builds);
+  const latestSuccessfulBuild = selectLatestSuccessfulBuild(builds);
+  const deployment = selectActivePreviewDeployment(previewDeployments);
+  const publishedDeployment =
+    selectActivePublishedDeployment(publishedDeployments);
+  const publishedDeploymentState = publishedDeployment
+    ? {
+        ...publishedDeployment,
+        publicState:
+          project.user?.bannedAt || publishedDeployment.status === "failed"
+            ? "not_live"
+            : "live",
+      }
+    : null;
+  const liveDeploymentStatus =
+    deployment?.status === "running" || deployment?.status === "starting"
+      ? await getRuntimeSupervisor().getDeploymentStatus(deployment.id)
+      : deployment?.status;
+  const latestEditAttempt = attempts[0] ?? null;
+  const activeJob = deriveActiveProjectJob({
+    attempt: latestEditAttempt,
+    build: latestAttempt,
+    events,
+    projectBuildStatus: project.buildStatus,
+    projectStatus: project.status,
+  });
+  const userFacingState = getUserFacingRuntimeState({
+    activeJobPhase: activeJob?.phase,
+    deploymentStatus: liveDeploymentStatus,
+    latestAttemptStatus: latestAttempt?.status,
+    latestFailedAttemptId: latestFailedAttempt?.id,
+    latestSuccessfulBuildId: latestSuccessfulBuild?.id,
+    projectBuildStatus: project.buildStatus,
+    projectStatus: project.status,
+  });
+
+  const hasPersistedSource = await projectHasPersistedSource({
+    projectId: project.id,
+    userId: project.userId,
+  });
+
+  const body = {
+    activeJob,
+    activePreviewDeployment: deployment
+      ? {
+          ...deployment,
+          status: liveDeploymentStatus,
+        }
+      : null,
+    activePublishedDeployment: publishedDeploymentState,
+    build: latestSuccessfulBuild,
+    canPreview: Boolean(deployment),
+    canPublish: Boolean(deployment?.build),
+    // Retry whenever the latest attempt failed/stale/canceled, or project has
+    canRetry:
+      latestAttempt?.status === "failed" ||
+      latestAttempt?.status === "stale" ||
+      latestAttempt?.status === "canceled" ||
+      userFacingState === "build_failed_without_last_good" ||
+      (project.status === "failed" && !latestSuccessfulBuild) ||
+      (!latestSuccessfulBuild &&
+        (latestFailedAttempt?.status === "failed" ||
+          latestFailedAttempt?.status === "stale")),
+    deployment: deployment
+      ? {
+          ...deployment,
+          status: liveDeploymentStatus,
+        }
+      : null,
+    events: events.map(({ metadata: _metadata, ...event }) => event),
+    hasPersistedSource,
+    latestAttempt,
+    latestFailedAttempt,
+    latestSuccessfulBuild,
+    message: getUserFacingRuntimeMessage(userFacingState),
+    publishedDeployment: publishedDeploymentState,
+    userFacingState,
+  };
+
+  writeRuntimeStateCache(userId, id, body);
+
+  return Response.json(body);
+}
+
+function readRuntimeStateCache(userId: string, projectId: string) {
+  evictExpiredRuntimeStateCache();
+  const cached = runtimeStateCache.get(runtimeStateCacheKey(userId, projectId));
+
+  if (
+    !cached ||
+    cached.userId !== userId ||
+    cached.projectId !== projectId ||
+    cached.expiresAt <= Date.now()
+  ) {
+    return null;
+  }
+
+  return cached;
+}
+
+function writeRuntimeStateCache(
+  userId: string,
+  projectId: string,
+  body: unknown,
+) {
+  evictExpiredRuntimeStateCache();
+  const key = runtimeStateCacheKey(userId, projectId);
+
+  runtimeStateCache.delete(key);
+
+  while (runtimeStateCache.size >= RUNTIME_STATE_CACHE_MAX_ENTRIES) {
+    const oldestKey = runtimeStateCache.keys().next().value;
+
+    if (typeof oldestKey !== "string") {
+      break;
+    }
+
+    runtimeStateCache.delete(oldestKey);
+  }
+
+  runtimeStateCache.set(key, {
+    body: createCacheSafeRuntimeBody(body),
+    expiresAt: Date.now() + RUNTIME_STATE_CACHE_TTL_MS,
+    projectId,
+    userId,
+  });
+}
+
+function evictExpiredRuntimeStateCache() {
+  const now = Date.now();
+
+  for (const [key, entry] of runtimeStateCache) {
+    if (entry.expiresAt <= now) {
+      runtimeStateCache.delete(key);
+    }
+  }
+}
+
+function runtimeStateCacheKey(userId: string, projectId: string) {
+  return `${userId.length}:${userId}${projectId}`;
+}
+
+function createCacheSafeRuntimeBody(body: unknown) {
+  return JSON.parse(
+    JSON.stringify(body, (key, value) =>
+      key === "logText" ? undefined : value,
+    ),
+  ) as unknown;
+}
+
+const FAILED_ATTEMPT_STATUSES = new Set(["canceled", "failed", "stale"]);
+
+function getUserFacingRuntimeState({
+  activeJobPhase,
+  deploymentStatus,
+  latestAttemptStatus,
+  latestFailedAttemptId,
+  latestSuccessfulBuildId,
+  projectBuildStatus,
+  projectStatus,
+}: {
+  activeJobPhase?: string | null;
+  deploymentStatus?: string | null;
+  latestAttemptStatus?: string | null;
+  latestFailedAttemptId?: string | null;
+  latestSuccessfulBuildId?: string | null;
+  projectBuildStatus?: string | null;
+  projectStatus?: string | null;
+}) {
+  // Edit/visual_comment can leave Project.status=building with no new
+  if (
+    latestAttemptStatus === "queued" ||
+    latestAttemptStatus === "running" ||
+    activeJobPhase === "generating" ||
+    activeJobPhase === "building" ||
+    activeJobPhase === "finalizing" ||
+    projectStatus === "building" ||
+    projectBuildStatus === "running"
+  ) {
+    return "building";
+  }
+
+  if (!latestSuccessfulBuildId) {
+    return latestFailedAttemptId
+      ? "build_failed_without_last_good"
+      : "not_built";
+  }
+
+  if (deploymentStatus === "starting") {
+    return "preview_starting";
+  }
+
+  if (deploymentStatus === "failed") {
+    return "preview_failed";
+  }
+
+  const isLatestAttemptFailed = Boolean(
+    latestAttemptStatus && FAILED_ATTEMPT_STATUSES.has(latestAttemptStatus),
+  );
+
+  return isLatestAttemptFailed && latestSuccessfulBuildId
+    ? "ready_with_failed_latest_attempt"
+    : "ready";
+}
+
+function getUserFacingRuntimeMessage(state: string) {
+  switch (state) {
+    case "building":
+      return "Website sedang dibuat.";
+    case "build_failed_without_last_good":
+      return "Website belum berhasil dibuat dan belum ada tampilan sebelumnya.";
+    case "preview_failed":
+      return "Tampilan website gagal dimuat. Coba muat ulang tampilan.";
+    case "preview_starting":
+      return "Tampilan website sedang disiapkan.";
+    case "ready":
+    case "ready_with_failed_latest_attempt":
+      return "Tampilan website siap dilihat.";
+    default:
+      return "Website belum dibuat.";
+  }
+}

@@ -1,36 +1,39 @@
-const baseGradient =
-  "radial-gradient(circle at 50% 0%, rgba(21,21,21,1) 0%, rgba(21,21,21,0.95) 16%, rgba(33,55,90,0.9) 32%, rgba(71,119,239,0.92) 50%, rgba(236,126,229,0.94) 66%, rgba(255,31,128,0.98) 82%, rgba(255,94,39,1) 100%)";
+"use client";
 
-const shiftedGradient =
-  "radial-gradient(circle at 46% 4%, rgba(21,21,21,1) 0%, rgba(21,21,21,0.92) 14%, rgba(40,64,108,0.92) 31%, rgba(92,142,255,0.9) 49%, rgba(224,114,236,0.88) 65%, rgba(255,45,144,0.92) 82%, rgba(255,110,48,0.94) 100%)";
-
-const warmDrift =
-  "radial-gradient(ellipse at 24% 76%, rgba(255,31,128,0.34), transparent 34%)";
-
-const coolDrift =
-  "radial-gradient(ellipse at 78% 32%, rgba(84,137,255,0.32), transparent 36%)";
+import { useEffect, useRef } from "react";
 
 export function HeroAuroraBackground() {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === "undefined") {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        el.classList.toggle("hero-aurora-paused", !entry.isIntersecting);
+      },
+      { threshold: 0 },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   return (
-    <div aria-hidden="true" className="absolute inset-0 -z-10 overflow-hidden">
-      <div className="absolute inset-0" style={{ background: baseGradient }} />
-      <div
-        className="hero-aurora-shift absolute inset-[-6%]"
-        style={{ background: shiftedGradient }}
-      />
-      <div
-        className="hero-aurora-drift absolute inset-[-12%] mix-blend-screen"
-        style={{ background: `${warmDrift}, ${coolDrift}` }}
-      />
-      <div
-        className="hero-aurora-vignette absolute inset-0"
-        style={{
-          background:
-            "radial-gradient(circle at 50% 18%, rgba(10,10,10,0.82) 0%, rgba(10,10,10,0.45) 18%, transparent 42%)",
-        }}
-      />
-      <div className="absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-[#151515] to-transparent" />
-      <div className="hero-aurora-bottom absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-[#ff5e27] via-[#ff1f80]/70 to-transparent" />
+    <div
+      ref={ref}
+      aria-hidden="true"
+      className="hero-aurora-orbs absolute inset-0 -z-10 overflow-hidden transition-colors duration-200"
+    >
+      <div className="hero-aurora-orb hero-aurora-orb-1" />
+      <div className="hero-aurora-orb hero-aurora-orb-2" />
+      <div className="hero-aurora-orb hero-aurora-orb-3" />
+      <div className="hero-aurora-orb hero-aurora-orb-core" />
+      <div className="hero-aurora-static-vignette" />
+      <div className="absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-[#eceae4] to-transparent dark:from-[#151515]" />
+      <div className="absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-[#eceae4] via-aurora-orange/20 to-transparent dark:from-aurora-orange dark:via-aurora-rose/58" />
     </div>
   );
 }
